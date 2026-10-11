@@ -1,0 +1,17 @@
+# OFF by default (initial_state: false). It starts the heater on its own, so
+# only turn it on deliberately. The state names are unconfirmed until the live
+# test; do not enable before then.
+- id: fryer_auto_start_after_preheat
+  alias: "Air fryer: start cooking when the basket goes back in after preheat"
+  description: >-
+    After preheat ends and the basket has been pulled out to add food, start
+    cooking as soon as the basket is back in.
+  initial_state: false
+  mode: single
+  triggers:
+    - trigger: state
+      entity_id: sensor.air_fryer_status
+      from: pullOut
+      to: preheatEnd
+  actions:
+    - action: cosori_fryer.start

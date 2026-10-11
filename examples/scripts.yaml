@@ -1,0 +1,56 @@
+# Friendly-named scripts for Assist and voice shortcuts. Add to scripts.yaml.
+# They call the cosori_fryer services, so the same state checks and limits apply.
+preheat_air_fryer:
+  alias: Preheat air fryer
+  description: Preheat the air fryer to a temperature and queue the cook time that follows.
+  icon: mdi:fire
+  mode: single
+  fields:
+    temp:
+      name: Temperature
+      description: Target temperature in °F (170-400).
+      required: true
+      selector:
+        number: {min: 170, max: 400, step: 5, unit_of_measurement: "°F"}
+    minutes:
+      name: Cook minutes
+      description: Cook time after preheat, in minutes (1-60).
+      required: true
+      selector:
+        number: {min: 1, max: 60, unit_of_measurement: min}
+  sequence:
+    - action: cosori_fryer.preheat
+      data:
+        temp: "{{ temp | int }}"
+        minutes: "{{ minutes | int }}"
+
+start_air_fryer:
+  alias: Start air fryer
+  description: Start cooking after preheat has finished, at the temperature and time already set.
+  icon: mdi:play
+  mode: single
+  sequence:
+    - action: cosori_fryer.start
+
+stop_air_fryer:
+  alias: Stop air fryer
+  description: Stop the air fryer.
+  icon: mdi:stop
+  mode: single
+  sequence:
+    - action: cosori_fryer.stop
+
+air_fryer_status:
+  alias: Air fryer status
+  description: Report what the air fryer is doing, its temperatures and the time left. Changes nothing.
+  icon: mdi:information-outline
+  mode: single
+  sequence:
+    - variables:
+        result:
+          status: "{{ states('sensor.air_fryer_status') }}"
+          current_temperature_f: "{{ states('sensor.air_fryer_current_temperature') }}"
+          target_temperature_f: "{{ states('sensor.air_fryer_target_temperature') }}"
+          minutes_remaining: "{{ states('sensor.air_fryer_time_remaining') }}"
+    - stop: Status read
+      response_variable: result

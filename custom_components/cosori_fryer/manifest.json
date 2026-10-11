@@ -1,0 +1,16 @@
+{
+  "domain": "cosori_fryer",
+  "name": "COSORI Air Fryer (CS358)",
+  "codeowners": [
+    "@ScribleSean"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/ScribleSean/ha-cosori-cs358-air-fryer",
+  "integration_type": "device",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/ScribleSean/ha-cosori-cs358-air-fryer/issues",
+  "requirements": [
+    "pyvesync==3.4.2"
+  ],
+  "version": "0.1.0"
+}

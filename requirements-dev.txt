@@ -1,0 +1,4 @@
+pytest
+pytest-asyncio
+pytest-homeassistant-custom-component
+pyvesync==3.4.2

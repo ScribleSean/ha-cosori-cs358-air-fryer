@@ -1,0 +1,36 @@
+preheat:
+  fields:
+    temp:
+      required: true
+      selector:
+        number:
+          min: 170
+          max: 400
+          step: 5
+          unit_of_measurement: "°F"
+    minutes:
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: min
+cook:
+  fields:
+    temp:
+      required: true
+      selector:
+        number:
+          min: 170
+          max: 400
+          step: 5
+          unit_of_measurement: "°F"
+    minutes:
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: min
+start:
+stop:

@@ -1,0 +1,37 @@
+# Spoken replies for the sentences in custom_sentences/en/air_fryer.yaml
+intent_script:
+  FryerPreheat:
+    action:
+      - action: script.preheat_air_fryer
+        data:
+          temp: "{{ temp }}"
+          minutes: "{{ minutes }}"
+    speech:
+      text: "Preheating the air fryer to {{ temp }} degrees, with {{ minutes }} minutes queued."
+  FryerStart:
+    action:
+      - action: script.start_air_fryer
+    speech:
+      text: "Starting the air fryer."
+  FryerStop:
+    action:
+      - action: script.stop_air_fryer
+    speech:
+      text: "Stopping the air fryer."
+  FryerTimeLeft:
+    speech:
+      text: >-
+        {% set left = states('sensor.air_fryer_time_remaining') | float(0) %}
+        {% if left > 0 %}About {{ left | round(0, 'ceil') | int }} minutes left on the air fryer.
+        {% else %}Nothing is running on the air fryer.{% endif %}
+  FryerStatus:
+    speech:
+      text: >-
+        {% set words = {
+          'standby': 'idle', 'pullOut': 'idle with the basket out',
+          'ready': 'loaded and waiting for Start', 'heating': 'preheating',
+          'preheatEnd': 'preheated and waiting', 'cooking': 'cooking',
+          'cookEnd': 'finished'} %}
+        {% set state = states('sensor.air_fryer_status') %}
+        {% set left = states('sensor.air_fryer_time_remaining') | float(0) | round(0, 'ceil') | int %}
+        The air fryer is {{ words.get(state, state) }}{% if left > 0 %}, with {{ left }} minutes left{% endif %}.

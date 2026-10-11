@@ -1,0 +1,35 @@
+language: "en"
+intents:
+  FryerPreheat:
+    data:
+      - sentences:
+          - "preheat [the] air fryer to {temp} [degrees] for {minutes} minute[s]"
+          - "preheat [the] air fryer to {temp} [degrees] and cook for {minutes} minute[s]"
+  FryerStart:
+    data:
+      - sentences:
+          - "start [the] air fryer"
+          - "start cooking [in the air fryer]"
+  FryerStop:
+    data:
+      - sentences:
+          - "(stop|cancel) [the] air fryer"
+  FryerTimeLeft:
+    data:
+      - sentences:
+          - "how (long|much time) is left on [the] air fryer"
+          - "how much longer on [the] air fryer"
+  FryerStatus:
+    data:
+      - sentences:
+          - "air fryer status"
+          - "what is [the] air fryer doing"
+lists:
+  temp:
+    range:
+      from: 170
+      to: 400
+  minutes:
+    range:
+      from: 1
+      to: 60
