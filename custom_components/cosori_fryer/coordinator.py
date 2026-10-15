@@ -1,126 +1,170 @@
-"""Polling and command handling for the fryer."""
+"""Polling, session handling and commands for the fryer."""
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import Any
-
-from pyvesync.utils.errors import VeSyncError
+from collections.abc import Awaitable, Callable
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    HomeAssistantError,
+    ServiceValidationError,
+)
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .api import AuthError, FryerClient, FryerError, FryerStatus, TokenRejected
 from .const import (
     ACTIVE_LINGER_SECONDS,
-    CONF_ALLOW_UNVERIFIED,
-    CONF_NOTIFY_SERVICE,
+    CONF_ACCOUNT_ID,
+    CONF_COUNTRY_CODE,
+    CONF_REGION,
+    CONF_TOKEN,
     DEFAULT_MINUTES,
-    DEFAULT_TEMP_F,
+    DEFAULT_TEMPERATURE,
     DOMAIN,
     EVENT_COOK_DONE,
     EVENT_PREHEAT_DONE,
     POLL_ACTIVE,
     POLL_IDLE,
-)
-from .cosori358 import (
-    COMMANDS,
-    COOK_PAUSED,
-    COOKING,
-    IDLE,
-    PREHEAT_DONE,
-    PREHEAT_PAUSED,
-    PREHEATING,
-    Cosori358,
-    FryerError,
-    FryerStatus,
-    Refused,
-    plan,
+    RELOGIN_COOLDOWN_SECONDS,
+    STATUS,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-# States worth watching closely. Plain "basket out" while idle is not one.
-_BUSY = {PREHEATING, PREHEAT_PAUSED, PREHEAT_DONE, COOKING, COOK_PAUSED}
+# Statuses worth watching closely.
+_BUSY = {
+    "heating",
+    "preheatStop",
+    "preheatEnd",
+    "ready",
+    "cooking",
+    "cookStop",
+    "keeping",
+}
 
 type FryerConfigEntry = ConfigEntry[FryerCoordinator]
 
 
 class FryerCoordinator(DataUpdateCoordinator[FryerStatus]):
-    """Reads the fryer every 30 s while busy and every 5 min when idle."""
+    """Reads the fryer every 30 s while busy and every minute when idle."""
 
     config_entry: FryerConfigEntry
 
     def __init__(
-        self, hass: HomeAssistant, entry: FryerConfigEntry, manager: Any, fryer: Cosori358
+        self, hass: HomeAssistant, entry: FryerConfigEntry, client: FryerClient
     ) -> None:
         super().__init__(
             hass, _LOGGER, config_entry=entry, name=DOMAIN, update_interval=POLL_IDLE
         )
-        self.manager = manager
-        self.fryer = fryer
-        self.target_temp: int = DEFAULT_TEMP_F
-        self.cook_minutes: int = DEFAULT_MINUTES
+        self.client = client
+        # The values the Preheat and Air fry buttons use, set by the number entities.
+        self.temperature = DEFAULT_TEMPERATURE
+        self.minutes = DEFAULT_MINUTES
         self._busy_until = 0.0
+        self._last_login = 0.0
+
+    async def _signed_in[T](self, request: Callable[[], Awaitable[T]]) -> T:
+        """Run a request, signing in again once if VeSync rejects the token."""
+        try:
+            return await request()
+        except TokenRejected:
+            if time.monotonic() - self._last_login < RELOGIN_COOLDOWN_SECONDS:
+                raise FryerError(
+                    "Signed out by another VeSync login; trying again shortly"
+                ) from None
+            self._last_login = time.monotonic()
+            try:
+                session = await self.client.login()
+            except AuthError as err:
+                raise ConfigEntryAuthFailed(str(err)) from err
+            self.hass.config_entries.async_update_entry(
+                self.config_entry,
+                data={
+                    **self.config_entry.data,
+                    CONF_TOKEN: session.token,
+                    CONF_ACCOUNT_ID: session.account_id,
+                    CONF_COUNTRY_CODE: session.country_code,
+                    CONF_REGION: session.region,
+                },
+            )
+            return await request()
 
     async def _async_update_data(self) -> FryerStatus:
         try:
-            status = await self.fryer.status()
-        except (FryerError, VeSyncError) as err:
+            status = await self._signed_in(self.client.status)
+        except FryerError as err:
             raise UpdateFailed(str(err)) from err
 
         if self.data is not None:
-            await self._notify_transitions(self.data.cook_status, status)
-        if status.cook_status in _BUSY:
+            self._announce(self.data.state, status.state)
+        if status.state in _BUSY:
             self._busy_until = time.monotonic() + ACTIVE_LINGER_SECONDS
-        busy = time.monotonic() < self._busy_until
-        self.update_interval = POLL_ACTIVE if busy else POLL_IDLE
+        self.update_interval = (
+            POLL_ACTIVE if time.monotonic() < self._busy_until else POLL_IDLE
+        )
         return status
 
-    async def _notify_transitions(self, before: str, status: FryerStatus) -> None:
-        after = status.cook_status
-        unit = f"°{status.temp_unit.upper()}"
-        if before == PREHEATING and after == PREHEAT_DONE:
-            event, title = EVENT_PREHEAT_DONE, "Air fryer preheated"
-            message = f"Preheat finished at {status.preheat_temp}{unit}. Add food and start cooking."
-        elif before == COOKING and after in IDLE:
-            event, title = EVENT_COOK_DONE, "Air fryer done"
-            message = "Cooking has finished."
-        else:
-            return
-
-        self.hass.bus.async_fire(event, {"status": after})
-        service = self.config_entry.options.get(CONF_NOTIFY_SERVICE)
-        if service and self.hass.services.has_service("notify", service):
-            await self.hass.services.async_call(
-                "notify", service, {"title": title, "message": message}, blocking=False
+    def _announce(self, before: str, after: str) -> None:
+        """Fire an event when preheat finishes and when a cook finishes."""
+        if before == "heating" and after == "preheatEnd":
+            self.hass.bus.async_fire(
+                EVENT_PREHEAT_DONE, {"entry_id": self.config_entry.entry_id}
+            )
+        elif before == "cooking" and after in ("cookEnd", "standby"):
+            self.hass.bus.async_fire(
+                EVENT_COOK_DONE, {"entry_id": self.config_entry.entry_id}
             )
 
-    async def async_command(
-        self, name: str, temp: int | None = None, minutes: int | None = None
+    async def _command(
+        self,
+        allowed: Callable[[FryerStatus], bool],
+        refusal: str,
+        action: Callable[[FryerStatus], Awaitable[None]],
     ) -> None:
-        """Run a command with the same checks as the CLI."""
+        """Read the fryer's current state, check it allows the action, then run it."""
         try:
-            status = await self.fryer.status()
-            method, data = plan(name, status, self.manager.account_id, temp, minutes)
-        except Refused as err:
-            raise ServiceValidationError(str(err)) from err
-        except (FryerError, VeSyncError) as err:
+            status = await self._signed_in(self.client.status)
+        except FryerError as err:
             raise HomeAssistantError(str(err)) from err
-
-        allowed = self.config_entry.options.get(CONF_ALLOW_UNVERIFIED, False)
-        if not COMMANDS[name].verified and not allowed:
+        if not allowed(status):
             raise ServiceValidationError(
-                f"'{name}' has not been proven on the real fryer yet. Turn on "
-                "'Allow commands not yet proven' in the integration's options to send it."
+                translation_domain=DOMAIN,
+                translation_key=refusal,
+                translation_placeholders={
+                    "state": STATUS.get(status.state, status.state).replace("_", " ")
+                },
             )
-
         try:
-            await self.fryer.send(method, data)
-        except (FryerError, VeSyncError) as err:
+            await self._signed_in(lambda: action(status))
+        except FryerError as err:
             raise HomeAssistantError(str(err)) from err
-
+        except ValueError as err:
+            raise ServiceValidationError(str(err)) from err
         self._busy_until = time.monotonic() + ACTIVE_LINGER_SECONDS
-        await self.async_refresh()
+        await self.async_request_refresh()
+
+    async def preheat(self, temperature: int) -> None:
+        """Preheat. The fryer needs a cook queued behind a preheat; Air fry replaces it."""
+        minutes = self.minutes
+        await self._command(
+            lambda s: s.can_preheat,
+            "cannot_preheat",
+            lambda _: self.client.start(temperature, minutes, preheat=True),
+        )
+
+    async def air_fry(self, temperature: int, minutes: int) -> None:
+        """Cook now, from idle or after a preheat."""
+        await self._command(
+            lambda s: s.can_air_fry,
+            "cannot_air_fry",
+            lambda s: self.client.air_fry(temperature, minutes, clear_first=s.waiting),
+        )
+
+    async def stop(self) -> None:
+        await self._command(
+            lambda s: s.can_stop, "cannot_stop", lambda _: self.client.stop()
+        )

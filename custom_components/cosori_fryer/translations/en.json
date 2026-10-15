@@ -3,36 +3,39 @@
     "step": {
       "user": {
         "title": "VeSync account",
-        "description": "Sign in with the VeSync account that owns the air fryer.",
-        "data": {
-          "email": "Email",
-          "password": "Password"
-        }
+        "description": "Sign in with the VeSync account that has the air fryer.",
+        "data": { "email": "Email", "password": "Password" }
+      },
+      "reauth_confirm": {
+        "title": "Sign in again",
+        "description": "VeSync rejected the saved password for {email}. Enter the current one.",
+        "data": { "password": "Password" }
       }
     },
     "error": {
       "invalid_auth": "VeSync rejected that email or password.",
-      "cannot_connect": "Could not reach VeSync.",
-      "no_fryer": "No CS358-AF air fryer was found on this account."
+      "cannot_connect": "Couldn't reach VeSync. Try again in a few minutes.",
+      "no_fryer": "There's no CS358-AF air fryer on this VeSync account."
     },
     "abort": {
-      "already_configured": "This account is already set up."
-    }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Air fryer options",
-        "data": {
-          "notify_service": "Notify service for done alerts (for example mobile_app_my_iphone)"
-        }
-      }
+      "already_configured": "This VeSync account is already set up.",
+      "reauth_successful": "Signed in again.",
+      "wrong_account": "That password belongs to a different VeSync account."
     }
   },
   "entity": {
+    "button": {
+      "preheat": { "name": "Preheat" },
+      "air_fry": { "name": "Air fry" },
+      "stop": { "name": "Stop" }
+    },
+    "number": {
+      "temperature": { "name": "Cook temperature" },
+      "minutes": { "name": "Cook time" }
+    },
     "sensor": {
-      "status": {
-        "name": "Status",
+      "cook_status": {
+        "name": "Cooking status",
         "state": {
           "idle": "Idle",
           "finished": "Finished",
@@ -46,69 +49,30 @@
           "keeping_warm": "Keeping warm"
         }
       },
-      "target_temp": {
-        "name": "Target temperature"
-      },
-      "time_remaining": {
-        "name": "Time remaining"
-      }
-    },
-    "number": {
-      "target_temp": {
-        "name": "Target temperature"
-      },
-      "cook_minutes": {
-        "name": "Cook minutes"
-      }
-    },
-    "button": {
-      "preheat": {
-        "name": "Preheat"
-      },
-      "start": {
-        "name": "Start cooking"
-      },
-      "stop": {
-        "name": "Stop"
-      }
+      "set_temperature": { "name": "Set temperature" },
+      "time_remaining": { "name": "Time remaining" }
     }
+  },
+  "exceptions": {
+    "not_loaded": { "message": "The air fryer isn't set up." },
+    "cannot_preheat": { "message": "The air fryer can only preheat when it's idle. It's {state}." },
+    "cannot_air_fry": { "message": "The air fryer can only start cooking when it's idle or preheated. It's {state}." },
+    "cannot_stop": { "message": "Nothing is running on the air fryer." }
   },
   "services": {
     "preheat": {
       "name": "Preheat",
-      "description": "Preheat to a temperature and queue the cook time that follows.",
+      "description": "Preheat the air fryer.",
+      "fields": { "temperature": { "name": "Temperature", "description": "170 to 400 °F, in steps of 10." } }
+    },
+    "air_fry": {
+      "name": "Air fry",
+      "description": "Cook at a temperature for a time. After a preheat, replaces the preheat program.",
       "fields": {
-        "temp": {
-          "name": "Temperature",
-          "description": "Target temperature."
-        },
-        "minutes": {
-          "name": "Cook minutes",
-          "description": "Cook time after preheat (1-60)."
-        }
+        "temperature": { "name": "Temperature", "description": "170 to 400 °F, in steps of 10." },
+        "minutes": { "name": "Cook time", "description": "1 to 60 minutes." }
       }
     },
-    "cook": {
-      "name": "Cook",
-      "description": "Cook at a temperature for a time, without preheating.",
-      "fields": {
-        "temp": {
-          "name": "Temperature",
-          "description": "Target temperature."
-        },
-        "minutes": {
-          "name": "Cook minutes",
-          "description": "Cook time (1-60)."
-        }
-      }
-    },
-    "start": {
-      "name": "Start cooking",
-      "description": "Continue into cooking after preheat has finished."
-    },
-    "stop": {
-      "name": "Stop",
-      "description": "End the current preheat or cook."
-    }
+    "stop": { "name": "Stop", "description": "Stop preheating or cooking." }
   }
 }

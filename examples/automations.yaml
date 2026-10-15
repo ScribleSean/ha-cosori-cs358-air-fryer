@@ -1,17 +1,23 @@
-# OFF by default (initial_state: false). It starts the heater on its own, so
-# only turn it on deliberately. The state names are unconfirmed until the live
-# test; do not enable before then.
-- id: fryer_auto_start_after_preheat
-  alias: "Air fryer: start cooking when the basket goes back in after preheat"
-  description: >-
-    After preheat ends and the basket has been pulled out to add food, start
-    cooking as soon as the basket is back in.
-  initial_state: false
-  mode: single
+# Phone notifications when preheat and cooking finish.
+# Replace notify.mobile_app_your_phone with your own notify action.
+- id: air_fryer_preheated
+  alias: "Air fryer: preheated"
   triggers:
-    - trigger: state
-      entity_id: sensor.air_fryer_status
-      from: basket_out
-      to: preheated
+    - trigger: event
+      event_type: cosori_fryer_preheat_done
   actions:
-    - action: cosori_fryer.start
+    - action: notify.mobile_app_your_phone
+      data:
+        title: Air fryer preheated
+        message: Add food, then press Air fry.
+
+- id: air_fryer_done
+  alias: "Air fryer: done"
+  triggers:
+    - trigger: event
+      event_type: cosori_fryer_cook_done
+  actions:
+    - action: notify.mobile_app_your_phone
+      data:
+        title: Air fryer done
+        message: Cooking has finished.

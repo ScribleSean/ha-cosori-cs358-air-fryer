@@ -1,55 +1,46 @@
 # Friendly-named scripts for Assist and voice shortcuts. Add to scripts.yaml.
-# They call the cosori_fryer services, so the same state checks and limits apply.
 preheat_air_fryer:
   alias: Preheat air fryer
-  description: Preheat the air fryer to a temperature and queue the cook time that follows.
+  description: Preheat the air fryer to a temperature.
   icon: mdi:fire
   mode: single
   fields:
-    temp:
+    temperature:
       name: Temperature
-      description: Target temperature in °F (170-400).
+      description: 170 to 400 °F, in steps of 10.
       required: true
       selector:
-        number: {min: 170, max: 400, step: 5, unit_of_measurement: "°F"}
+        number: {min: 170, max: 400, step: 10, unit_of_measurement: "°F"}
+  sequence:
+    - action: cosori_fryer.preheat
+      data:
+        temperature: "{{ temperature | int }}"
+
+air_fry:
+  alias: Air fry
+  description: Cook at a temperature for a time. Works on its own or after a preheat.
+  icon: mdi:fan
+  mode: single
+  fields:
+    temperature:
+      name: Temperature
+      required: true
+      selector:
+        number: {min: 170, max: 400, step: 10, unit_of_measurement: "°F"}
     minutes:
-      name: Cook minutes
-      description: Cook time after preheat, in minutes (1-60).
+      name: Cook time
       required: true
       selector:
         number: {min: 1, max: 60, unit_of_measurement: min}
   sequence:
-    - action: cosori_fryer.preheat
+    - action: cosori_fryer.air_fry
       data:
-        temp: "{{ temp | int }}"
+        temperature: "{{ temperature | int }}"
         minutes: "{{ minutes | int }}"
-
-start_air_fryer:
-  alias: Start air fryer
-  description: Start cooking after preheat has finished, at the temperature and time already set.
-  icon: mdi:play
-  mode: single
-  sequence:
-    - action: cosori_fryer.start
 
 stop_air_fryer:
   alias: Stop air fryer
-  description: Stop the air fryer.
   icon: mdi:stop
   mode: single
   sequence:
     - action: cosori_fryer.stop
-
-air_fryer_status:
-  alias: Air fryer status
-  description: Report what the air fryer is doing, its temperatures and the time left. Changes nothing.
-  icon: mdi:information-outline
-  mode: single
-  sequence:
-    - variables:
-        result:
-          status: "{{ state_translated('sensor.air_fryer_status') }}"
-          target_temperature_f: "{{ states('sensor.air_fryer_target_temperature') }}"
-          minutes_remaining: "{{ states('sensor.air_fryer_time_remaining') }}"
-    - stop: Status read
-      response_variable: result
