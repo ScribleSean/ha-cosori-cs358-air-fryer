@@ -95,6 +95,7 @@ class FryerCoordinator(DataUpdateCoordinator[FryerStatus]):
         self._busy_until = 0.0
         self._cycle: str | None = None  # "preheat" or "cook" while one is in progress
         self._login_lock = asyncio.Lock()
+        self._password_rejected = False  # Until reauth reloads the entry with a new one.
         # Polls and commands read the fryer one at a time, so states are seen in order.
         self._read_lock = asyncio.Lock()
 
@@ -126,6 +127,8 @@ class FryerCoordinator(DataUpdateCoordinator[FryerStatus]):
             current = self.client.session.token if self.client.session else None
             if current and current != rejected_token:
                 return  # Someone else already signed in while we waited.
+            if self._password_rejected:
+                raise ConfigEntryAuthFailed("VeSync rejected the stored password")
             email = self.config_entry.data[CONF_EMAIL]
             if not login_allowed(self.hass, email, self.config_entry):
                 raise FryerError("Signed out by another VeSync login; trying again shortly")
@@ -133,6 +136,8 @@ class FryerCoordinator(DataUpdateCoordinator[FryerStatus]):
             try:
                 session = await self.client.login()
             except AuthError as err:
+                self._password_rejected = True
+                # The reauth form can try a new password straight away.
                 forget_login(self.hass, email, self.config_entry)
                 raise ConfigEntryAuthFailed(str(err)) from err
             self.hass.config_entries.async_update_entry(
