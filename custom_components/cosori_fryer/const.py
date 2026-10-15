@@ -9,6 +9,7 @@ CONF_TOKEN = "token"  # noqa: S105 - a config key, not a secret
 CONF_ACCOUNT_ID = "account_id"
 CONF_COUNTRY_CODE = "country_code"
 CONF_REGION = "region"
+CONF_LAST_LOGIN = "last_login"
 
 POLL_ACTIVE = timedelta(seconds=30)
 POLL_IDLE = timedelta(minutes=1)

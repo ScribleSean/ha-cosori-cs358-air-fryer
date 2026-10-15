@@ -25,6 +25,7 @@ from pytest_homeassistant_custom_component.common import (
 from custom_components.cosori_fryer.api import AuthError, FryerError
 from custom_components.cosori_fryer.const import (
     CONF_ACCOUNT_ID,
+    CONF_LAST_LOGIN,
     CONF_TERMINAL_ID,
     CONF_TOKEN,
     DOMAIN,
@@ -333,6 +334,56 @@ async def test_no_second_login_within_the_cooldown(hass: HomeAssistant, fryer: F
     await poll(hass, POLL_IDLE * 2)
     assert fryer.logins == 1
     assert state(hass, "sensor.air_fryer_cooking_status") == STATE_UNAVAILABLE
+
+
+@pytest.mark.parametrize("failed", [False, True])
+async def test_login_cooldown_survives_reload(
+    hass: HomeAssistant, fryer: FakeClient, freezer, failed: bool
+) -> None:
+    entry = await setup(hass, fryer)
+    fryer.reject_token = True
+    if failed:
+        fryer.login_error = FryerError("VeSync is rate limiting logins")
+        with pytest.raises(FryerError):
+            await entry.runtime_data._signed_in(fryer.status)
+    else:
+        await entry.runtime_data._signed_in(fryer.status)
+    assert fryer.logins == 1
+    attempted_at = entry.data[CONF_LAST_LOGIN]
+
+    # Recreating the coordinator must not bypass the previous attempt's cooldown.
+    fryer.reject_token = True
+    assert not await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert fryer.logins == 1
+    assert entry.data[CONF_LAST_LOGIN] == attempted_at
+
+    # Once the persisted cooldown expires, recovery is allowed again.
+    fryer.login_error = None
+    freezer.tick(timedelta(seconds=301))
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+    assert fryer.logins == 2
+    assert entry.data[CONF_LAST_LOGIN] > attempted_at
+
+
+async def test_restored_entry_keeps_the_login_cooldown(hass: HomeAssistant, fryer: FakeClient) -> None:
+    import time
+
+    fryer.reject_token = True
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**ENTRY_DATA, CONF_LAST_LOGIN: time.time()},
+        unique_id="ACCOUNT-1",
+        version=2,
+    )
+    entry.add_to_hass(hass)
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert fryer.logins == 0
 
 
 async def test_events_when_preheat_and_cooking_finish(hass: HomeAssistant, fryer: FakeClient) -> None:

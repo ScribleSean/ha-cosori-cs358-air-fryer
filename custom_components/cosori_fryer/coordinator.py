@@ -22,6 +22,7 @@ from .const import (
     ACTIVE_LINGER_SECONDS,
     CONF_ACCOUNT_ID,
     CONF_COUNTRY_CODE,
+    CONF_LAST_LOGIN,
     CONF_REGION,
     CONF_TOKEN,
     DEFAULT_MINUTES,
@@ -55,7 +56,6 @@ class FryerCoordinator(DataUpdateCoordinator[FryerStatus]):
         self.temperature = DEFAULT_TEMPERATURE
         self.minutes = DEFAULT_MINUTES
         self._busy_until = 0.0
-        self._last_login: float | None = None
         self._login_lock = asyncio.Lock()
         self._command_lock = asyncio.Lock()
 
@@ -87,10 +87,15 @@ class FryerCoordinator(DataUpdateCoordinator[FryerStatus]):
             current = self.client.session.token if self.client.session else None
             if current and current != rejected_token:
                 return  # Someone else already signed in while we waited.
-            now = time.monotonic()
-            if self._last_login is not None and now - self._last_login < RELOGIN_COOLDOWN_SECONDS:
+            # Wall-clock time survives coordinator recreation and Home Assistant restarts.
+            now = time.time()
+            last_login = self.config_entry.data.get(CONF_LAST_LOGIN)
+            if last_login is not None and now - last_login < RELOGIN_COOLDOWN_SECONDS:
                 raise FryerError("Signed out by another VeSync login; trying again shortly")
-            self._last_login = now
+            # Save before trying: failed and rate-limited attempts need the same cooldown.
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, data={**self.config_entry.data, CONF_LAST_LOGIN: now}
+            )
             try:
                 session = await self.client.login()
             except AuthError as err:
