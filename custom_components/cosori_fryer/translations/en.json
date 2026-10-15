@@ -28,7 +28,9 @@
       "invalid_auth": "VeSync rejected that email or password.",
       "cannot_connect": "Couldn't reach VeSync. Try again in a few minutes.",
       "no_fryer": "There's no CS358-AF air fryer on this VeSync account.",
-      "unknown": "Something unexpected went wrong. Check the logs."
+      "unknown": "Something unexpected went wrong. Check the logs.",
+      "rate_limited": "VeSync limits how often you can sign in. Try again in a few minutes.",
+      "multiple_fryers": "There's more than one CS358-AF on this VeSync account. This integration supports one per account."
     },
     "abort": {
       "already_configured": "This VeSync account is already set up.",
@@ -108,6 +110,9 @@
     },
     "choose_account": {
       "message": "More than one VeSync account is configured. Select the account with config_entry_id."
+    },
+    "duplicate_account": {
+      "message": "Another entry already uses this VeSync account. Remove one of them."
     }
   },
   "services": {

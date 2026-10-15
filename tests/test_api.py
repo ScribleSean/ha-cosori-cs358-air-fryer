@@ -107,52 +107,9 @@ async def test_login_sends_a_hashed_password_and_keeps_the_session() -> None:
     assert http.posts[1][1]["authorizeCode"] == "AUTH"
 
 
-async def test_login_retries_once_in_the_accounts_region() -> None:
-    answers = iter(
-        [
-            {
-                "code": -11260022,
-                "result": {
-                    "bizToken": "BIZ",
-                    "countryCode": "GB",
-                    "currentRegion": "EU",
-                },
-            },
-            {
-                "code": 0,
-                "result": {
-                    "token": "T",
-                    "accountID": "A",
-                    "countryCode": "GB",
-                    "currentRegion": "EU",
-                },
-            },
-        ]
-    )
-    fryer, http = client(
-        {
-            "/globalPlatform/api/accountAuth/v1/authByPWDOrOTM": {
-                "code": 0,
-                "result": {"authorizeCode": "AUTH"},
-            },
-            "/user/api/accountManage/v1/loginByAuthorizeCode4Vesync": lambda body: next(answers),
-        },
-        session=None,
-    )
-    session = await fryer.login()
-    assert session.region == "EU"
-    assert http.posts[2][1]["bizToken"] == "BIZ"
-
-
-async def test_wrong_password_is_an_auth_error() -> None:
-    fryer, _ = client(
-        {
-            "/globalPlatform/api/accountAuth/v1/authByPWDOrOTM": {
-                "code": -11201000,
-                "msg": "wrong",
-            }
-        }
-    )
+@pytest.mark.parametrize("code", [-11201000, -11202000])
+async def test_wrong_password_or_account_is_an_auth_error(code: int) -> None:
+    fryer, _ = client({"/globalPlatform/api/accountAuth/v1/authByPWDOrOTM": {"code": code, "msg": "wrong"}})
     with pytest.raises(AuthError):
         await fryer.login()
 
@@ -295,7 +252,9 @@ async def test_region_retry_goes_to_the_eu_host() -> None:
         },
         session=None,
     )
-    await fryer.login()
+    session = await fryer.login()
+    assert session.region == "EU"
+    assert http.posts[2][1]["bizToken"] == "BIZ"
     assert http.hosts == ["smartapi.vesync.com", "smartapi.vesync.com", "smartapi.vesync.eu"]
 
 
@@ -341,6 +300,7 @@ async def test_timeout_is_a_fryer_error() -> None:
         {"code": 0, "result": {"code": 0, "result": ["not", "a", "dict"]}},
         {"code": 0, "result": {"code": 0, "result": {"cookStatus": "cooking", "stepIndex": "x"}}},
         {"code": 0, "result": {"code": 0, "result": {"cookStatus": "heating", "preheatLastTime": "soon"}}},
+        {"code": 0, "result": {"code": 0, "result": {}}},
     ],
 )
 async def test_malformed_status_is_a_fryer_error(reply: dict[str, Any]) -> None:
@@ -352,4 +312,12 @@ async def test_malformed_status_is_a_fryer_error(reply: dict[str, Any]) -> None:
 async def test_device_list_with_junk_items_is_no_fryer() -> None:
     fryer, _ = client({"/cloud/v1/deviceManaged/devices": {"code": 0, "result": {"list": ["junk", None]}}})
     with pytest.raises(api.NoFryer):
+        await fryer.find_fryer()
+
+
+async def test_more_than_one_fryer_is_refused() -> None:
+    second = {"deviceType": "CS358-AF", "cid": "CID-2", "configModule": "CM", "deviceRegion": "US"}
+    listing = {"code": 0, "result": {"list": [*DEVICES["result"]["list"], second]}}
+    fryer, _ = client({"/cloud/v1/deviceManaged/devices": listing})
+    with pytest.raises(api.TooManyFryers):
         await fryer.find_fryer()

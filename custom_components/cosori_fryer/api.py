@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
@@ -56,6 +56,14 @@ class NoFryer(FryerError):
     """The account has no CS358-AF."""
 
 
+class TooManyFryers(FryerError):
+    """The account has more than one CS358-AF; this integration handles one."""
+
+
+class RateLimited(FryerError):
+    """VeSync is refusing logins for now."""
+
+
 @dataclass(frozen=True)
 class Session:
     """What a login returns; stored so restarts do not need a new login."""
@@ -83,7 +91,6 @@ class FryerStatus:
     cook_set_time: int | None = None
     preheat_set_time: int | None = None
     seconds_left: int = 0
-    raw: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def idle(self) -> bool:
@@ -104,13 +111,15 @@ class FryerStatus:
 
     @property
     def can_stop(self) -> bool:
-        return not self.idle and self.state not in ("pullOut", "unknown")
+        return not self.idle and self.state != "pullOut"
 
     @classmethod
     def parse(cls, result: dict[str, Any]) -> FryerStatus:
         """Build a status from getAirfryerStatus; raise FryerError if the reply is malformed."""
         try:
-            state = str(result.get("cookStatus") or "unknown")
+            state = result.get("cookStatus")
+            if not isinstance(state, str) or not state:
+                raise FryerError("VeSync sent a status without a cooking status")
             steps = result.get("stepArray") or []
             index = int(result.get("stepIndex") or 0)
             step = steps[index] if isinstance(steps, list) and 0 <= index < len(steps) else {}
@@ -134,7 +143,6 @@ class FryerStatus:
                 cook_set_time=int(cook_time) if cook_time is not None else None,
                 preheat_set_time=preheat_set or None,
                 seconds_left=max(seconds, 0),
-                raw=result,
             )
         except (AttributeError, TypeError, ValueError) as err:
             raise FryerError(f"VeSync sent a malformed status: {err}") from err
@@ -208,7 +216,7 @@ class FryerClient:
         if code in CREDENTIAL_ERRORS:
             return AuthError(message)
         if code in RATE_LIMITED:
-            return FryerError("VeSync is rate limiting logins; try again later")
+            return RateLimited("VeSync is rate limiting logins; try again later")
         return FryerError(f"VeSync login failed: {message}")
 
     async def login(self) -> Session:
@@ -272,9 +280,8 @@ class FryerClient:
             raise TokenRejected("Not signed in")
         return self.session
 
-    async def _authorised(self, path: str, build: Any) -> dict[str, Any]:
-        self._require_session()
-        answer = await self._post(path, build())
+    async def _authorised(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        answer = await self._post(path, body)
         if answer.get("code") == TOKEN_EXPIRED:
             raise TokenRejected("VeSync rejected the session token")
         if answer.get("code") != 0:
@@ -282,62 +289,61 @@ class FryerClient:
         return answer
 
     async def find_fryer(self) -> Device:
-        """Find the CS358-AF on the account."""
-
-        def body() -> dict[str, Any]:
-            session = self._require_session()
-            return {
-                **self._common(),
-                "appVersion": APP_VERSION,
-                "phoneBrand": "pyvesync",
-                "phoneOS": "Android",
-                "method": "devices",
-                "pageNo": 1,
-                "pageSize": 100,
-                "accountID": session.account_id,
-                "token": session.token,
-            }
-
+        """Find the CS358-AF on the account. Exactly one is supported."""
+        session = self._require_session()
+        body = {
+            **self._common(),
+            "appVersion": APP_VERSION,
+            "phoneBrand": "pyvesync",
+            "phoneOS": "Android",
+            "method": "devices",
+            "pageNo": 1,
+            "pageSize": 100,
+            "accountID": session.account_id,
+            "token": session.token,
+        }
         answer = await self._authorised("/cloud/v1/deviceManaged/devices", body)
         result = answer.get("result")
         items = result.get("list") if isinstance(result, dict) else None
-        for item in items if isinstance(items, list) else []:
-            if (
-                isinstance(item, dict)
-                and item.get("deviceType") == DEVICE_TYPE
-                and item.get("cid")
-                and item.get("configModule")
-            ):
-                self.device = Device(
-                    cid=item["cid"],
-                    name=item.get("deviceName") or "Air fryer",
-                    config_module=item["configModule"],
-                    region=item.get("deviceRegion") or "US",
-                )
-                return self.device
-        raise NoFryer(f"No {DEVICE_TYPE} on this VeSync account")
+        fryers = [
+            item
+            for item in (items if isinstance(items, list) else [])
+            if isinstance(item, dict)
+            and item.get("deviceType") == DEVICE_TYPE
+            and item.get("cid")
+            and item.get("configModule")
+        ]
+        if not fryers:
+            raise NoFryer(f"No {DEVICE_TYPE} on this VeSync account")
+        if len(fryers) > 1:
+            raise TooManyFryers(f"More than one {DEVICE_TYPE} on this VeSync account")
+        item = fryers[0]
+        self.device = Device(
+            cid=item["cid"],
+            name=item.get("deviceName") or "Air fryer",
+            config_module=item["configModule"],
+            region=item.get("deviceRegion") or "US",
+        )
+        return self.device
 
     async def _call(self, method: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
         device = self.device or await self.find_fryer()
-
-        def body() -> dict[str, Any]:
-            session = self._require_session()
-            return {
-                **self._common(),
-                "appVersion": APP_VERSION,
-                "phoneBrand": "pyvesync",
-                "phoneOS": "Android",
-                "accountID": session.account_id,
-                "token": session.token,
-                "cid": device.cid,
-                "deviceId": device.cid,
-                "configModule": device.config_module,
-                "configModel": device.config_module,
-                "deviceRegion": device.region,
-                "method": "bypassV2",
-                "payload": {"method": method, "source": "APP", "data": data or {}},
-            }
-
+        session = self._require_session()
+        body = {
+            **self._common(),
+            "appVersion": APP_VERSION,
+            "phoneBrand": "pyvesync",
+            "phoneOS": "Android",
+            "accountID": session.account_id,
+            "token": session.token,
+            "cid": device.cid,
+            "deviceId": device.cid,
+            "configModule": device.config_module,
+            "configModel": device.config_module,
+            "deviceRegion": device.region,
+            "method": "bypassV2",
+            "payload": {"method": method, "source": "APP", "data": data or {}},
+        }
         answer = await self._authorised("/cloud/v2/deviceManaged/bypassV2", body)
         outer = answer.get("result")
         if not isinstance(outer, dict):

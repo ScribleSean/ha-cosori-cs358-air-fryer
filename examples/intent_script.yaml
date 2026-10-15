@@ -8,7 +8,7 @@ intent_script:
           cooking_time: "{{ cooking_time }}"
           preheat: true
     speech:
-      text: "Preheating the air fryer to {{ temperature }} degrees."
+      text: "Preheating to {{ temperature }} degrees for a {{ cooking_time }} minute cook."
   FryerStart:
     action:
       - action: button.press
