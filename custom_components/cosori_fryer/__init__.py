@@ -140,9 +140,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: FryerConfigEntry) -> boo
 
 
 def _first_for_account(hass: HomeAssistant, entry: FryerConfigEntry) -> bool:
-    """Whether this is the oldest enabled entry for its account; only that one loads.
-
-    Decided from stored data alone, so entries starting at the same time agree.
+    """Whether this entry may load: no other entry for its account is loaded, and
+    otherwise the oldest wins. Decided without a request, so entries starting at
+    the same time agree.
     """
     email = entry.data[CONF_EMAIL].lower()
     account_ids = {entry.data.get(CONF_ACCOUNT_ID), entry.unique_id} - {None}
@@ -152,6 +152,8 @@ def _first_for_account(hass: HomeAssistant, entry: FryerConfigEntry) -> bool:
         if other.data.get(CONF_EMAIL, "").lower() == email
         or account_ids & {other.data.get(CONF_ACCOUNT_ID), other.unique_id}
     ]
+    if any(other is not entry and other.state is ConfigEntryState.LOADED for other in same):
+        return False
     return not same or min(same, key=lambda other: (other.created_at, other.entry_id)) is entry
 
 

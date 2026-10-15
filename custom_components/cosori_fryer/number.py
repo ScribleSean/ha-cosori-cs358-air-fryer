@@ -9,7 +9,6 @@ from homeassistant.components.number import NumberDeviceClass, NumberEntityDescr
 from homeassistant.const import UnitOfTemperature, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from homeassistant.util.unit_conversion import TemperatureConverter
 
 from .api import MINUTES_MAX, MINUTES_MIN, TEMP_MAX, TEMP_MIN, TEMP_STEP
 from .coordinator import FryerConfigEntry, FryerCoordinator
@@ -59,10 +58,9 @@ class FryerSetting(FryerEntity, RestoreNumber):
     @property
     def native_step(self) -> float | None:
         step = self.entity_description.native_step
-        native, shown = self.native_unit_of_measurement, self.unit_of_measurement
-        if step and self.device_class == NumberDeviceClass.TEMPERATURE and native != shown:
+        if step and self.unit_of_measurement == UnitOfTemperature.CELSIUS:
             # Home Assistant converts the value and limits to Celsius but not the step.
-            return TemperatureConverter.convert_interval(step, native, shown)
+            return step * 5 / 9
         return step
 
     async def async_added_to_hass(self) -> None:

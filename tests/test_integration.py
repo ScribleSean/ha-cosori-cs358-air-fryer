@@ -966,3 +966,39 @@ async def test_action_refuses_values_that_are_not_numbers(
             DOMAIN, "start_cooking", {"temperature": 360, "cooking_time": value}, blocking=True
         )
     assert fryer.commands == []
+
+
+async def test_reenabled_older_duplicate_does_not_load_beside_the_newer(
+    hass: HomeAssistant, fryer: FakeClient
+) -> None:
+    from homeassistant.config_entries import ConfigEntryDisabler
+
+    older = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_EMAIL: "me@example.com", CONF_PASSWORD: "secret"},
+        unique_id="me@example.com",
+        version=1,
+        disabled_by=ConfigEntryDisabler.USER,
+    )
+    older.add_to_hass(hass)
+    newer = await setup(hass, fryer)
+    await hass.config_entries.async_set_disabled_by(older.entry_id, None)
+    await hass.async_block_till_done()
+    assert newer.state is ConfigEntryState.LOADED
+    assert older.state is ConfigEntryState.SETUP_ERROR
+
+
+async def test_rejected_password_is_not_retried_by_every_press(
+    hass: HomeAssistant, fryer: FakeClient
+) -> None:
+    from homeassistant.exceptions import HomeAssistantError
+
+    await setup(hass, fryer)
+    fryer.reject_token = True
+    fryer.login_error = AuthError("password changed")
+    for _ in range(2):
+        with pytest.raises(HomeAssistantError):
+            await hass.services.async_call(
+                "button", "press", {"entity_id": "button.air_fryer_start"}, blocking=True
+            )
+    assert fryer.logins == 1
