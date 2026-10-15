@@ -18,7 +18,7 @@ Tested on a physical US unit.
 | Cook without preheat | |
 | Stop | while staged, preheating or cooking |
 
-Not supported: pause and resume from the cloud (the fryer pauses itself when the basket is pulled), starting preset programs, and the current temperature reading, which the fryer always reports as 0.
+Not supported: pause and resume from the cloud (the fryer pauses itself when the basket is pulled), starting preset programs, and a current temperature reading, which the fryer always reports as 0.
 
 Limits: 170 to 400 °F, 1 to 60 minutes.
 
@@ -43,12 +43,12 @@ Then go to Settings, Devices & services, Add integration, "COSORI Air Fryer (CS3
 | Services | `cosori_fryer.preheat`, `cosori_fryer.cook` (both take `temp`, `minutes`), `cosori_fryer.start`, `cosori_fryer.stop` |
 | Buttons | Preheat, Start cooking, Stop |
 | Numbers | Target temperature, Cook minutes (used by the Preheat button) |
-| Sensors | Status, Target temperature, Time remaining, Current temperature |
+| Sensors | Status, Target temperature, Time remaining (for the phase that is running) |
 | Events | `cosori_fryer_preheat_done`, `cosori_fryer_cook_done` |
 
 Every command reads the fryer's state first and is refused, with the reason, if the state does not allow it.
 
-Status is read every 30 seconds while the fryer is busy and every 5 minutes when idle.
+Status is read every 30 seconds while the fryer is busy and every minute when idle.
 
 To get a phone notification when preheat or cooking ends, open the integration's options and enter a notify service name, for example `mobile_app_my_phone`.
 

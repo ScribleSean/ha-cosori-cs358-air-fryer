@@ -142,6 +142,18 @@ class FryerStatus:
     def is_active(self) -> bool:
         return self.cook_status in ACTIVE
 
+    @property
+    def seconds_left(self) -> int:
+        """Time left in the phase that is running.
+
+        The fryer's own total counts a preheat plus the cook queued behind it.
+        """
+        if self.cook_status in (PREHEATING, PREHEAT_PAUSED):
+            return self.preheat_seconds_left
+        if self.cook_status == PREHEAT_DONE:
+            return 0
+        return self.total_seconds_left
+
 
 def validate(temp: int, minutes: int, unit: str) -> None:
     """Raise Refused unless temp and minutes are inside the device's limits."""

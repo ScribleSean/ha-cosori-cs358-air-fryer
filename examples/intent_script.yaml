@@ -27,11 +27,6 @@ intent_script:
   FryerStatus:
     speech:
       text: >-
-        {% set words = {
-          'standby': 'idle', 'pullOut': 'idle with the basket out',
-          'ready': 'loaded and waiting for Start', 'heating': 'preheating',
-          'preheatEnd': 'preheated and waiting', 'cooking': 'cooking',
-          'cookEnd': 'finished'} %}
         {% set state = states('sensor.air_fryer_status') %}
         {% set left = states('sensor.air_fryer_time_remaining') | float(0) | round(0, 'ceil') | int %}
-        The air fryer is {{ words.get(state, state) }}{% if left > 0 %}, with {{ left }} minutes left{% endif %}.
+        The air fryer is {{ state_translated('sensor.air_fryer_status') | lower }}{% if left > 0 %}, with {{ left }} minutes left{% endif %}.

@@ -24,7 +24,6 @@
       "init": {
         "title": "Air fryer options",
         "data": {
-          "allow_unverified": "Allow commands not yet proven on the real fryer",
           "notify_service": "Notify service for done alerts (for example mobile_app_my_iphone)"
         }
       }
@@ -33,10 +32,19 @@
   "entity": {
     "sensor": {
       "status": {
-        "name": "Status"
-      },
-      "current_temp": {
-        "name": "Current temperature"
+        "name": "Status",
+        "state": {
+          "idle": "Idle",
+          "finished": "Finished",
+          "basket_out": "Basket out",
+          "ready": "Waiting for Start",
+          "preheating": "Preheating",
+          "preheat_paused": "Preheat paused",
+          "preheated": "Preheated",
+          "cooking": "Cooking",
+          "paused": "Paused",
+          "keeping_warm": "Keeping warm"
+        }
       },
       "target_temp": {
         "name": "Target temperature"

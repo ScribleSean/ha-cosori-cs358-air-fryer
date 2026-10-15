@@ -78,6 +78,7 @@ def make_manager(cook_status: str = "standby", inner_code: int = 0):
         country_code="US",
         current_region="US",
         cook_status=cook_status,
+        status_overrides={},
         login=AsyncMock(return_value=True),
         _api_base_url_for_current_region=lambda: "https://vesync.test",
     )
@@ -86,7 +87,7 @@ def make_manager(cook_status: str = "standby", inner_code: int = 0):
         if url.endswith(cosori358.DEVICE_LIST_PATH):
             return {"code": 0, "result": {"list": [DEVICE]}}
         if body["payload"]["method"] == "getAirfryerStatus":
-            return {"code": 0, "result": {"code": 0, "result": status_result(manager.cook_status)}}
+            return {"code": 0, "result": {"code": 0, "result": {**status_result(manager.cook_status), **manager.status_overrides}}}
         return {"code": 0, "result": {"code": inner_code, "result": {}}}
 
     manager.session = FakeSession(handler)

@@ -48,8 +48,7 @@ air_fryer_status:
   sequence:
     - variables:
         result:
-          status: "{{ states('sensor.air_fryer_status') }}"
-          current_temperature_f: "{{ states('sensor.air_fryer_current_temperature') }}"
+          status: "{{ state_translated('sensor.air_fryer_status') }}"
           target_temperature_f: "{{ states('sensor.air_fryer_target_temperature') }}"
           minutes_remaining: "{{ states('sensor.air_fryer_time_remaining') }}"
     - stop: Status read
