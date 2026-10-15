@@ -9,6 +9,7 @@ from homeassistant.components.number import NumberDeviceClass, NumberEntityDescr
 from homeassistant.const import UnitOfTemperature, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util.unit_conversion import TemperatureConverter
 
 from .api import MINUTES_MAX, MINUTES_MIN, TEMP_MAX, TEMP_MIN, TEMP_STEP
 from .coordinator import FryerConfigEntry, FryerCoordinator
@@ -55,13 +56,22 @@ class FryerSetting(FryerEntity, RestoreNumber):
     def available(self) -> bool:
         return True
 
+    @property
+    def native_step(self) -> float | None:
+        step = self.entity_description.native_step
+        native, shown = self.native_unit_of_measurement, self.unit_of_measurement
+        if step and self.device_class == NumberDeviceClass.TEMPERATURE and native != shown:
+            # Home Assistant converts the value and limits to Celsius but not the step.
+            return TemperatureConverter.convert_interval(step, native, shown)
+        return step
+
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         last = await self.async_get_last_number_data()
         if last is None or last.native_value is None:
             return
         value = last.native_value
-        step = self.native_step or 1
+        step = self.entity_description.native_step or 1
         if self.native_min_value <= value <= self.native_max_value and value % step == 0:
             setattr(self.coordinator, _FIELD[self.entity_description.key], int(value))
 
@@ -71,7 +81,7 @@ class FryerSetting(FryerEntity, RestoreNumber):
 
     async def async_set_native_value(self, value: float) -> None:
         # Home Assistant checks the range but not the step; snap to the fryer's steps.
-        step = self.native_step or 1
+        step = self.entity_description.native_step or 1
         snapped = round(value / step) * step
         snapped = min(max(snapped, self.native_min_value), self.native_max_value)
         setattr(self.coordinator, _FIELD[self.entity_description.key], int(snapped))

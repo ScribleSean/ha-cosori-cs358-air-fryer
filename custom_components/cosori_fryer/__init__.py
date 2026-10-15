@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
 from typing import Any
 
 import voluptuous as vol
@@ -48,7 +47,12 @@ def _in_steps(value: int) -> int:
 
 def _whole(value: Any) -> int:
     """Accept whole numbers only, so 170.9 or 1.9 is refused instead of silently cut down."""
-    number = float(value)
+    if isinstance(value, bool):
+        raise vol.Invalid("Must be a number")
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as err:
+        raise vol.Invalid("Must be a number") from err
     if not number.is_integer():
         raise vol.Invalid("Must be a whole number")
     return int(number)
@@ -118,18 +122,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: FryerConfigEntry) -> boo
         stored_session(entry),
         hass.config.time_zone,
     )
-    if _duplicate(
-        hass, entry, lambda other: other.data[CONF_EMAIL].lower() == entry.data[CONF_EMAIL].lower()
-    ):
-        # Possible with setups from before 0.3.0. Stopping here avoids a login that
-        # would sign the other entry out.
+    if not _first_for_account(hass, entry):
+        # Possible with setups from before 0.3.0. Stopping before any request avoids
+        # a login that would sign the other entry out.
         raise ConfigEntryError(translation_domain=DOMAIN, translation_key="duplicate_account")
     coordinator = FryerCoordinator(hass, entry, client)
     # Finds the fryer, then reads it. The stored session is reused; a new
     # login only happens if VeSync rejects it.
     await coordinator.async_config_entry_first_refresh()
-    account_id = client.session.account_id if client.session else None
-    if _duplicate(hass, entry, lambda other: other.unique_id == account_id):
+    if not _first_for_account(hass, entry):  # The account id may only be known now.
         raise ConfigEntryError(translation_domain=DOMAIN, translation_key="duplicate_account")
     if client.device is not None:  # Always set once the first refresh succeeded.
         await _migrate_unique_ids(hass, entry, client.device.cid)
@@ -138,14 +139,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: FryerConfigEntry) -> boo
     return True
 
 
-def _duplicate(
-    hass: HomeAssistant, entry: FryerConfigEntry, same: Callable[[FryerConfigEntry], bool]
-) -> bool:
-    """Another entry for the same account that's already loaded."""
-    return any(
-        other.entry_id != entry.entry_id and other.state is ConfigEntryState.LOADED and same(other)
-        for other in hass.config_entries.async_entries(DOMAIN)
-    )
+def _first_for_account(hass: HomeAssistant, entry: FryerConfigEntry) -> bool:
+    """Whether this is the oldest enabled entry for its account; only that one loads.
+
+    Decided from stored data alone, so entries starting at the same time agree.
+    """
+    email = entry.data[CONF_EMAIL].lower()
+    account_ids = {entry.data.get(CONF_ACCOUNT_ID), entry.unique_id} - {None}
+    same = [
+        other
+        for other in hass.config_entries.async_entries(DOMAIN, include_ignore=False, include_disabled=False)
+        if other.data.get(CONF_EMAIL, "").lower() == email
+        or account_ids & {other.data.get(CONF_ACCOUNT_ID), other.unique_id}
+    ]
+    return not same or min(same, key=lambda other: (other.created_at, other.entry_id)) is entry
 
 
 # Entity keys used by earlier releases, by platform, and what they are now.

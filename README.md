@@ -32,7 +32,7 @@ Tested on a physical US unit. Not supported: cloud pause and resume (pulling the
 
 ## Action
 
-`cosori_fryer.start_cooking` starts a manual program: `temperature` (multiples of 10), `cooking_time` in minutes, and optionally `preheat: true`. It's refused, with the reason, unless the fryer is in standby or finished. With more than one VeSync account set up, pass `config_entry_id`.
+`cosori_fryer.start_cooking` starts a manual program: `temperature` in °F (170 to 400, in steps of 10), `cooking_time` in minutes (1 to 60), and optionally `preheat: true`. It's refused, with the reason, unless the fryer is in standby or finished. With more than one VeSync account set up, pass `config_entry_id`.
 
 ## Events
 
@@ -41,7 +41,7 @@ Tested on a physical US unit. Not supported: cloud pause and resume (pulling the
 ## Before you install
 
 - **This starts a heating appliance remotely.** Only start it with the drawer in and the fryer clear.
-- **VeSync allows one session per account.** Anything else signed in to the account, including the VeSync app and the built-in VeSync integration, signs this out and the other way round. Logins are at least five minutes apart, and the fryer's entities are unavailable until it's signed in again. Give it a VeSync account of its own, with the fryer shared to it.
+- **VeSync allows one session per account.** Anything else signed in to the account, including the VeSync app and the built-in VeSync integration, signs this out and the other way round. Sign-in attempts are at least five minutes apart; until it's signed in again, the sensors and buttons are unavailable. Give it a VeSync account of its own, with the fryer shared to it.
 - **One fryer per account,** and Home Assistant 2025.3 or later.
 
 ## Install

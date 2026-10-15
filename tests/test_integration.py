@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import Generator
 from datetime import timedelta
 from unittest.mock import AsyncMock, patch
@@ -500,7 +502,7 @@ async def test_no_persistent_notifications(hass: HomeAssistant, fryer: FakeClien
 
 
 async def test_old_entries_get_the_account_id_and_can_sign_in_again(
-    hass: HomeAssistant, fryer: FakeClient
+    hass: HomeAssistant, fryer: FakeClient, freezer
 ) -> None:
     """Entries from before 0.3.0 used the email as unique id; reauth must still work."""
     hass.config.units = US_CUSTOMARY_SYSTEM
@@ -515,6 +517,7 @@ async def test_old_entries_get_the_account_id_and_can_sign_in_again(
     await hass.async_block_till_done()
     assert entry.unique_id == "ACCOUNT-1"
 
+    freezer.tick(timedelta(seconds=301))  # past the cooldown from that login
     result = await entry.start_reauth_flow(hass)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_PASSWORD: "new"})
     await hass.async_block_till_done()
@@ -849,3 +852,117 @@ async def test_cooking_temperature_converts_on_metric_systems(hass: HomeAssistan
     # 180 °C is 356 °F, which snaps to the fryer's 360 °F.
     await hass.services.async_call("button", "press", {"entity_id": "button.air_fryer_start"}, blocking=True)
     assert fryer.commands[-1] == ("start", 360, 10, False)
+
+
+# --- fourth review ----------------------------------------------------------
+
+
+async def test_cooking_temperature_steps_by_10_f_in_celsius(hass: HomeAssistant, fryer: FakeClient) -> None:
+    from homeassistant.util.unit_system import METRIC_SYSTEM
+
+    hass.config.units = METRIC_SYSTEM
+    entry = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, unique_id="ACCOUNT-1", version=2)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    temperature = hass.states.get("number.air_fryer_cooking_temperature")
+    step = temperature.attributes["step"]
+    assert step == pytest.approx(50 / 9)
+    await hass.services.async_call(
+        "number",
+        "set_value",
+        {"entity_id": temperature.entity_id, "value": float(temperature.state) + step},
+        blocking=True,
+    )
+    await hass.services.async_call("button", "press", {"entity_id": "button.air_fryer_start"}, blocking=True)
+    assert fryer.commands[-1] == ("start", 370, 10, False)
+
+
+async def test_duplicate_old_entries_starting_together_sign_in_once(
+    hass: HomeAssistant, fryer: FakeClient
+) -> None:
+    entries = [
+        MockConfigEntry(
+            domain=DOMAIN, data={CONF_EMAIL: email, CONF_PASSWORD: "secret"}, unique_id=email, version=1
+        )
+        for email in ("me@example.com", "ME@example.com")
+    ]
+    for entry in entries:
+        entry.add_to_hass(hass)
+    await asyncio.gather(*(hass.config_entries.async_setup(entry.entry_id) for entry in entries))
+    await hass.async_block_till_done()
+    assert [entry.state for entry in entries] == [ConfigEntryState.LOADED, ConfigEntryState.SETUP_ERROR]
+    assert fryer.logins == 1
+
+
+async def test_reopened_setup_form_keeps_the_cooldown(hass: HomeAssistant, fryer: FakeClient) -> None:
+    credentials = {CONF_EMAIL: "me@example.com", CONF_PASSWORD: "secret"}
+    fryer.login_error = RateLimited("slow down")
+    for _ in range(2):
+        flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+        result = await hass.config_entries.flow.async_configure(flow["flow_id"], credentials)
+        assert result["errors"] == {"base": "rate_limited"}
+        hass.config_entries.flow.async_abort(flow["flow_id"])  # closed and opened again
+    assert fryer.logins == 1
+
+
+async def test_reauth_waits_out_a_recent_login(hass: HomeAssistant, fryer: FakeClient) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={**ENTRY_DATA, CONF_LAST_LOGIN: time.time()}, unique_id="ACCOUNT-1", version=2
+    )
+    entry.add_to_hass(hass)
+    result = await entry.start_reauth_flow(hass)
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_PASSWORD: "new"})
+    assert result["errors"] == {"base": "rate_limited"}
+    assert fryer.logins == 0
+
+
+async def test_a_refused_command_still_shows_what_it_read(hass: HomeAssistant, fryer: FakeClient) -> None:
+    await setup(hass, fryer, "cooking")
+    assert state(hass, "button.air_fryer_stop") != STATE_UNAVAILABLE
+    fryer.result = raw("standby")  # stopped on the fryer since the last poll
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(
+            "button", "press", {"entity_id": "button.air_fryer_stop"}, blocking=True
+        )
+    assert state(hass, "sensor.air_fryer_cooking_status") == "standby"
+    assert state(hass, "button.air_fryer_stop") == STATE_UNAVAILABLE
+
+
+async def test_poll_and_command_reads_take_turns(hass: HomeAssistant, fryer: FakeClient) -> None:
+    entry = await setup(hass, fryer, "cooking")
+    coordinator = entry.runtime_data
+    done = async_capture_events(hass, EVENT_COOK_DONE)
+    gate = asyncio.Event()
+    read = fryer.status
+
+    async def slow_status():
+        status = await read()  # reads "cooking" now ...
+        await gate.wait()  # ... but returns late
+        return status
+
+    with patch.object(fryer, "status", slow_status):
+        stale_poll = hass.async_create_task(coordinator.async_refresh())
+        await asyncio.sleep(0)
+    fryer.result = raw("cookEnd")
+    command = hass.async_create_task(coordinator.start_cooking(360, 5, preheat=False))
+    await asyncio.sleep(0)
+    gate.set()
+    await stale_poll
+    await command
+    await hass.async_block_till_done()
+    fryer.result = raw("cookEnd")
+    await poll(hass, POLL_ACTIVE)
+    assert len(done) == 1
+
+
+@pytest.mark.parametrize("value", [True, None, [5], {"m": 5}])
+async def test_action_refuses_values_that_are_not_numbers(
+    hass: HomeAssistant, fryer: FakeClient, value
+) -> None:
+    await setup(hass, fryer)
+    with pytest.raises(vol.Invalid):
+        await hass.services.async_call(
+            DOMAIN, "start_cooking", {"temperature": 360, "cooking_time": value}, blocking=True
+        )
+    assert fryer.commands == []
