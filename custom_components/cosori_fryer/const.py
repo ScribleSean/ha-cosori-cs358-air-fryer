@@ -8,7 +8,7 @@ CONF_ALLOW_UNVERIFIED = "allow_unverified"
 CONF_NOTIFY_SERVICE = "notify_service"
 
 POLL_ACTIVE = timedelta(seconds=30)
-POLL_IDLE = timedelta(minutes=5)
+POLL_IDLE = timedelta(minutes=1)
 # Keep polling fast for a while after activity, so "basket back in" is noticed.
 ACTIVE_LINGER_SECONDS = 600
 

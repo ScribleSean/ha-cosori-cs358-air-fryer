@@ -33,15 +33,31 @@ class FryerSensorDescription(SensorEntityDescription):
     is_temperature: bool = False
 
 
+# Fryer status codes and the words shown for them.
+STATUS_WORDS = {
+    "standby": "idle",
+    "cookEnd": "finished",
+    "pullOut": "basket_out",
+    "ready": "ready",
+    "heating": "preheating",
+    "preheatStop": "preheat_paused",
+    "preheatEnd": "preheated",
+    "cooking": "cooking",
+    "cookStop": "paused",
+    "keeping": "keeping_warm",
+}
+
 SENSORS = (
-    FryerSensorDescription(key="status", value=lambda s: s.cook_status),
     FryerSensorDescription(
-        key="current_temp", value=lambda s: s.current_temp, is_temperature=True
+        key="status",
+        device_class=SensorDeviceClass.ENUM,
+        options=list(STATUS_WORDS.values()),
+        value=lambda s: STATUS_WORDS.get(s.cook_status),
     ),
     FryerSensorDescription(key="target_temp", value=_target_temp, is_temperature=True),
     FryerSensorDescription(
         key="time_remaining",
-        value=lambda s: s.total_seconds_left,
+        value=lambda s: s.seconds_left,
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.SECONDS,
         suggested_unit_of_measurement=UnitOfTime.MINUTES,

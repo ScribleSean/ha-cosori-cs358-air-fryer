@@ -97,7 +97,7 @@ async def test_config_flow_reports_a_missing_fryer(hass: HomeAssistant):
 
 async def test_entities_are_created(hass: HomeAssistant):
     await setup_fryer(hass, "pullOut")
-    assert hass.states.get("sensor.air_fryer_status").state == "pullOut"
+    assert hass.states.get("sensor.air_fryer_status").state == "basket_out"
     assert hass.states.get("sensor.air_fryer_target_temperature").state == "360"
     assert hass.states.get("number.air_fryer_target_temperature").state == "350"
     assert hass.states.get("number.air_fryer_cook_minutes").state == "10"
@@ -201,14 +201,14 @@ async def setup_fryer_second(hass: HomeAssistant, cook_status: str):
     return entry, manager
 
 
-async def test_preheat_end_fires_an_event_and_a_notification(hass: HomeAssistant):
+async def test_preheat_end_fires_an_event(hass: HomeAssistant):
     _, manager = await setup_fryer(hass, "heating")
     events = async_capture_events(hass, EVENT_PREHEAT_DONE)
     manager.cook_status = "preheatEnd"
     async_fire_time_changed(hass, dt_util.utcnow() + POLL_ACTIVE + timedelta(seconds=1))
     await hass.async_block_till_done()
     assert len(events) == 1
-    assert hass.states.get("sensor.air_fryer_status").state == "preheatEnd"
+    assert hass.states.get("sensor.air_fryer_status").state == "preheated"
 
 
 async def test_cook_done_fires_on_finish_but_not_on_basket_pull(hass: HomeAssistant):
@@ -225,3 +225,15 @@ async def test_cook_done_fires_on_finish_but_not_on_basket_pull(hass: HomeAssist
     async_fire_time_changed(hass, dt_util.utcnow() + 3 * POLL_ACTIVE + timedelta(seconds=3))
     await hass.async_block_till_done()
     assert len(events) == 1
+
+
+async def test_time_remaining_counts_only_the_running_phase(hass: HomeAssistant):
+    """A preheat shows the preheat time, not preheat plus the queued cook."""
+    _, manager = await setup_fryer(hass, "standby")
+    manager.status_overrides = {
+        "cookStatus": "heating", "preheatLastTime": 240, "totalTimeRemaining": 840,
+    }
+    async_fire_time_changed(hass, dt_util.utcnow() + POLL_IDLE + timedelta(seconds=1))
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.air_fryer_time_remaining").state == "4.0"
+

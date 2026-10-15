@@ -11,7 +11,7 @@
   triggers:
     - trigger: state
       entity_id: sensor.air_fryer_status
-      from: pullOut
-      to: preheatEnd
+      from: basket_out
+      to: preheated
   actions:
     - action: cosori_fryer.start

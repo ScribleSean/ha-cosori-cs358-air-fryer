@@ -18,7 +18,7 @@ from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import CONF_ALLOW_UNVERIFIED, CONF_NOTIFY_SERVICE, DOMAIN
+from .const import CONF_NOTIFY_SERVICE, DOMAIN
 from .cosori358 import Cosori358, FryerError
 
 _USER_SCHEMA = vol.Schema(
@@ -72,10 +72,6 @@ class FryerOptionsFlow(OptionsFlow):
         options = self.config_entry.options
         schema = vol.Schema(
             {
-                vol.Required(
-                    CONF_ALLOW_UNVERIFIED,
-                    default=options.get(CONF_ALLOW_UNVERIFIED, False),
-                ): bool,
                 vol.Optional(
                     CONF_NOTIFY_SERVICE,
                     description={"suggested_value": options.get(CONF_NOTIFY_SERVICE, "")},

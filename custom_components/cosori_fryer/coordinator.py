@@ -8,7 +8,6 @@ from typing import Any
 
 from pyvesync.utils.errors import VeSyncError
 
-from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
@@ -93,9 +92,6 @@ class FryerCoordinator(DataUpdateCoordinator[FryerStatus]):
             return
 
         self.hass.bus.async_fire(event, {"status": after})
-        persistent_notification.async_create(
-            self.hass, message, title=title, notification_id=event
-        )
         service = self.config_entry.options.get(CONF_NOTIFY_SERVICE)
         if service and self.hass.services.has_service("notify", service):
             await self.hass.services.async_call(
