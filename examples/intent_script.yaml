@@ -2,27 +2,30 @@
 intent_script:
   FryerPreheat:
     action:
-      - action: cosori_fryer.preheat
+      - action: cosori_fryer.start_cooking
         data:
           temperature: "{{ temperature }}"
+          cooking_time: "{{ cooking_time }}"
+          preheat: true
     speech:
       text: "Preheating the air fryer to {{ temperature }} degrees."
-  FryerAirFry:
+  FryerStart:
     action:
-      - action: cosori_fryer.air_fry
-        data:
-          temperature: "{{ temperature }}"
-          minutes: "{{ minutes }}"
+      - action: button.press
+        target:
+          entity_id: button.air_fryer_start
     speech:
-      text: "Air frying at {{ temperature }} degrees for {{ minutes }} minutes."
+      text: "Starting the air fryer."
   FryerStop:
     action:
-      - action: cosori_fryer.stop
+      - action: button.press
+        target:
+          entity_id: button.air_fryer_stop
     speech:
       text: "Stopping the air fryer."
   FryerTimeLeft:
     speech:
       text: >-
-        {% set left = states('sensor.air_fryer_time_remaining') | int(0) %}
-        {% if left > 0 %}About {{ left }} minutes left, {{ state_translated('sensor.air_fryer_cooking_status') | lower }}.
-        {% else %}The air fryer is {{ state_translated('sensor.air_fryer_cooking_status') | lower }}.{% endif %}
+        {% set left = states('sensor.air_fryer_remaining_time') | int(0) %}
+        {% set status = state_translated('sensor.air_fryer_cooking_status') | lower %}
+        {% if left > 0 %}{{ left }} minutes left, {{ status }}.{% else %}The air fryer is {{ status }}.{% endif %}

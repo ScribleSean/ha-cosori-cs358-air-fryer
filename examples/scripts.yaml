@@ -1,46 +1,42 @@
 # Friendly-named scripts for Assist and voice shortcuts. Add to scripts.yaml.
 preheat_air_fryer:
   alias: Preheat air fryer
-  description: Preheat the air fryer to a temperature.
+  description: Preheat the air fryer; press Start when it's done.
   icon: mdi:fire
   mode: single
   fields:
     temperature:
       name: Temperature
-      description: 170 to 400 °F, in steps of 10.
       required: true
       selector:
         number: {min: 170, max: 400, step: 10, unit_of_measurement: "°F"}
-  sequence:
-    - action: cosori_fryer.preheat
-      data:
-        temperature: "{{ temperature | int }}"
-
-air_fry:
-  alias: Air fry
-  description: Cook at a temperature for a time. Works on its own or after a preheat.
-  icon: mdi:fan
-  mode: single
-  fields:
-    temperature:
-      name: Temperature
-      required: true
-      selector:
-        number: {min: 170, max: 400, step: 10, unit_of_measurement: "°F"}
-    minutes:
-      name: Cook time
+    cooking_time:
+      name: Cooking time
       required: true
       selector:
         number: {min: 1, max: 60, unit_of_measurement: min}
   sequence:
-    - action: cosori_fryer.air_fry
+    - action: cosori_fryer.start_cooking
       data:
         temperature: "{{ temperature | int }}"
-        minutes: "{{ minutes | int }}"
+        cooking_time: "{{ cooking_time | int }}"
+        preheat: true
+
+start_air_fryer:
+  alias: Start air fryer
+  description: Press Start, as on the fryer.
+  icon: mdi:play
+  mode: single
+  sequence:
+    - action: button.press
+      target:
+        entity_id: button.air_fryer_start
 
 stop_air_fryer:
   alias: Stop air fryer
   icon: mdi:stop
   mode: single
   sequence:
-    - action: cosori_fryer.stop
+    - action: button.press
+      target:
+        entity_id: button.air_fryer_stop

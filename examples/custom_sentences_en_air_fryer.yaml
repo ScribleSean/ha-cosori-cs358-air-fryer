@@ -4,12 +4,11 @@ intents:
   FryerPreheat:
     data:
       - sentences:
-          - "preheat [the] air fryer [to] {temperature} [degrees]"
-  FryerAirFry:
+          - "preheat [the] air fryer [to] {temperature} [degrees] for {cooking_time} minute[s]"
+  FryerStart:
     data:
       - sentences:
-          - "air fry [for] {minutes} minute[s] at {temperature} [degrees]"
-          - "air fry at {temperature} [degrees] for {minutes} minute[s]"
+          - "start [the] air fryer"
   FryerStop:
     data:
       - sentences:
@@ -24,7 +23,7 @@ lists:
       from: 170
       to: 400
       step: 10
-  minutes:
+  cooking_time:
     range:
       from: 1
       to: 60

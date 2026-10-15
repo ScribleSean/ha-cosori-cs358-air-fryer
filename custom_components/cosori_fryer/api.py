@@ -1,13 +1,11 @@
 """Minimal client for the COSORI CS358-AF through the VeSync cloud.
 
-Uses only the requests confirmed on a physical unit: login,
-the device list, and the bypassV2 methods getAirfryerStatus, startCook
-and endCook.
+Uses only the requests confirmed on a physical unit: login, the device list,
+and the bypassV2 methods getAirfryerStatus, startCook, preheatCook and endCook.
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import time
 from dataclasses import dataclass, field
@@ -22,7 +20,10 @@ MINUTES_MIN, MINUTES_MAX = 1, 60
 APP_VERSION = "5.6.60"
 APP_ID = "eldodkfj"
 TOKEN_EXPIRED = -11001000
-SETTLE_SECONDS = 2
+# VeSync error codes, as classified by pyvesync.
+CREDENTIAL_ERRORS = {-11201000, -11202000}  # wrong password, unknown account
+RATE_LIMITED = {-16906000, -11003000}
+CROSS_REGION = -11260022
 
 _HEADERS = {
     "Content-Type": "application/json; charset=UTF-8",
@@ -48,6 +49,10 @@ class TokenRejected(FryerError):
     """VeSync rejected the session token."""
 
 
+class NoFryer(FryerError):
+    """The account has no CS358-AF."""
+
+
 @dataclass(frozen=True)
 class Session:
     """What a login returns; stored so restarts do not need a new login."""
@@ -68,10 +73,12 @@ class Device:
 
 @dataclass(frozen=True)
 class FryerStatus:
-    """The fryer's state, with times for the phase that is running."""
+    """The fryer's state as reported by getAirfryerStatus."""
 
     state: str
-    target_temp: int | None = None
+    cook_set_temp: int | None = None
+    cook_set_time: int | None = None
+    preheat_set_time: int | None = None
     seconds_left: int = 0
     raw: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
@@ -80,17 +87,17 @@ class FryerStatus:
         return self.state in ("standby", "cookEnd")
 
     @property
-    def waiting(self) -> bool:
-        """A program is loaded but not running: preheat finished, or staged."""
-        return self.state in ("preheatEnd", "ready")
+    def preheated(self) -> bool:
+        return self.state == "preheatEnd"
 
     @property
     def can_preheat(self) -> bool:
         return self.idle
 
     @property
-    def can_air_fry(self) -> bool:
-        return self.idle or self.waiting
+    def can_start(self) -> bool:
+        """Start cooks from idle, or continues into the cook once preheat has finished."""
+        return self.idle or self.preheated
 
     @property
     def can_stop(self) -> bool:
@@ -102,29 +109,35 @@ class FryerStatus:
         steps = result.get("stepArray") or []
         index = result.get("stepIndex") or 0
         step = steps[index] if 0 <= index < len(steps) else {}
-        target = step.get("cookTemp")
-        # The fryer's total counts a preheat plus the cook queued behind it.
-        seconds = int(result.get("totalTimeRemaining") or 0)
+        preheating = state in ("heating", "preheatStop", "preheatEnd")
+        # The fryer's total counts a preheat plus the cook queued behind it;
+        # report the time left in the phase that is running.
         if state in ("heating", "preheatStop"):
             seconds = int(result.get("preheatLastTime") or 0)
-            target = result.get("preheatTemp") or target
         elif state == "preheatEnd":
             seconds = 0
-        return cls(state=state, target_temp=target, seconds_left=seconds, raw=result)
+        else:
+            seconds = int(result.get("totalTimeRemaining") or 0)
+        return cls(
+            state=state,
+            cook_set_temp=step.get("cookTemp"),
+            cook_set_time=step.get("cookSetTime"),
+            preheat_set_time=(result.get("preheatSetTime") or None) if preheating else None,
+            seconds_left=seconds,
+            raw=result,
+        )
 
 
 def check_settings(temperature: int, minutes: int) -> None:
     """Raise ValueError unless the fryer accepts this temperature and time."""
     if not TEMP_MIN <= temperature <= TEMP_MAX or temperature % TEMP_STEP:
-        raise ValueError(
-            f"Temperature must be {TEMP_MIN} to {TEMP_MAX} °F in steps of {TEMP_STEP}."
-        )
+        raise ValueError(f"Temperature must be {TEMP_MIN} to {TEMP_MAX} °F in steps of {TEMP_STEP}.")
     if not MINUTES_MIN <= minutes <= MINUTES_MAX:
         raise ValueError(f"Cook time must be {MINUTES_MIN} to {MINUTES_MAX} minutes.")
 
 
 class FryerClient:
-    """Talks to one CS358-AF. A rejected token gets one new login, no more."""
+    """Talks to one CS358-AF. It never signs in on its own; callers decide when to."""
 
     def __init__(
         self,
@@ -143,14 +156,9 @@ class FryerClient:
         self.session = session
         self.device: Device | None = None
 
-    @property
-    def _base(self) -> str:
-        region = self.session.region if self.session else "US"
-        return (
-            "https://smartapi.vesync.eu"
-            if region == "EU"
-            else "https://smartapi.vesync.com"
-        )
+    def _base(self, region: str | None) -> str:
+        region = region or (self.session.region if self.session else "US")
+        return "https://smartapi.vesync.eu" if region == "EU" else "https://smartapi.vesync.com"
 
     def _common(self) -> dict[str, Any]:
         return {
@@ -161,87 +169,92 @@ class FryerClient:
             "userCountryCode": self.session.country_code if self.session else "US",
         }
 
-    async def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+    async def _post(self, path: str, body: dict[str, Any], region: str | None = None) -> dict[str, Any]:
         try:
-            async with self._http.post(
-                self._base + path, json=body, headers=_HEADERS
-            ) as resp:
+            async with self._http.post(self._base(region) + path, json=body, headers=_HEADERS) as resp:
                 if resp.status != 200:
                     raise FryerError(f"VeSync answered HTTP {resp.status}")
                 data = await resp.json(content_type=None)
         except (ClientError, TimeoutError) as err:
             raise FryerError(f"Could not reach VeSync: {err}") from err
+        except ValueError as err:
+            raise FryerError("VeSync sent an unreadable response") from err
         if not isinstance(data, dict):
             raise FryerError("VeSync sent an unreadable response")
         return data
 
+    @staticmethod
+    def _login_failed(answer: dict[str, Any]) -> FryerError:
+        code = answer.get("code")
+        message = str(answer.get("msg") or f"code {code}")
+        if code in CREDENTIAL_ERRORS:
+            return AuthError(message)
+        if code in RATE_LIMITED:
+            return FryerError("VeSync is rate limiting logins; try again later")
+        return FryerError(f"VeSync login failed: {message}")
+
     async def login(self) -> Session:
-        """Sign in with email and password. Signs other clients out."""
-        auth = {
+        """Sign in with email and password. Signs other clients of the account out."""
+        identity = {
             **self._common(),
             **_IDENTITY,
-            "method": "authByPWDOrOTM",
-            "email": self._email,
-            "password": hashlib.md5(self._password.encode()).hexdigest(),  # noqa: S324
-            "authProtocolType": "generic",
             "accountID": "",
             "token": "",
             "terminalId": self._terminal_id,
+        }
+        auth = {
+            **identity,
+            "method": "authByPWDOrOTM",
+            "email": self._email,
+            "password": hashlib.md5(self._password.encode()).hexdigest(),
+            "authProtocolType": "generic",
             "appID": APP_ID,
             "sourceAppID": APP_ID,
         }
-        first = await self._post(
-            "/globalPlatform/api/accountAuth/v1/authByPWDOrOTM", auth
-        )
+        first = await self._post("/globalPlatform/api/accountAuth/v1/authByPWDOrOTM", auth)
         code = (first.get("result") or {}).get("authorizeCode")
         if first.get("code") != 0 or not code:
-            message = str(first.get("msg") or "")
-            if "frequent" in message.lower():
-                raise FryerError("VeSync is rate limiting logins; try again later")
-            raise AuthError(message or "VeSync rejected the login")
+            raise self._login_failed(first)
 
+        path = "/user/api/accountManage/v1/loginByAuthorizeCode4Vesync"
         exchange = {
-            **self._common(),
-            **_IDENTITY,
+            **identity,
             "method": "loginByAuthorizeCode4Vesync",
             "authorizeCode": code,
             "emailSubscriptions": False,
-            "accountID": "",
-            "token": "",
-            "terminalId": self._terminal_id,
         }
-        path = "/user/api/accountManage/v1/loginByAuthorizeCode4Vesync"
         answer = await self._post(path, exchange)
         result = answer.get("result") or {}
-        if answer.get("code") != 0 and result.get("bizToken"):
-            # The account lives in another region: retry once with the token VeSync returns.
+        region = None
+        if answer.get("code") == CROSS_REGION and result.get("bizToken"):
+            # The account lives in another region: retry once there with the token VeSync returns.
+            region = result.get("currentRegion") or None
             exchange |= {
                 "bizToken": result["bizToken"],
                 "regionChange": "lastRegion",
-                "userCountryCode": result.get("countryCode", "US"),
+                "userCountryCode": result.get("countryCode") or "US",
             }
-            self.session = Session(
-                "",
-                "",
-                result.get("countryCode", "US"),
-                result.get("currentRegion") or "US",
-            )
-            answer = await self._post(path, exchange)
+            answer = await self._post(path, exchange, region)
             result = answer.get("result") or {}
-        if answer.get("code") != 0 or not result.get("token"):
-            raise AuthError(str(answer.get("msg") or "VeSync rejected the login"))
+        if answer.get("code") != 0:
+            raise self._login_failed(answer)
+        if not result.get("token") or not result.get("accountID"):
+            raise FryerError("VeSync login returned no session")
         self.session = Session(
             token=result["token"],
             account_id=result["accountID"],
             country_code=result.get("countryCode") or "US",
-            region=result.get("currentRegion")
-            or (self.session.region if self.session else "US"),
+            region=result.get("currentRegion") or region or "US",
         )
         return self.session
 
-    async def _authorised(self, path: str, build: Any) -> dict[str, Any]:
+    def _require_session(self) -> Session:
         if self.session is None or not self.session.token:
             raise TokenRejected("Not signed in")
+        return self.session
+
+    async def _authorised(self, path: str, build: Any) -> dict[str, Any]:
+        self._require_session()
         answer = await self._post(path, build())
         if answer.get("code") == TOKEN_EXPIRED:
             raise TokenRejected("VeSync rejected the session token")
@@ -253,7 +266,7 @@ class FryerClient:
         """Find the CS358-AF on the account."""
 
         def body() -> dict[str, Any]:
-            assert self.session
+            session = self._require_session()
             return {
                 **self._common(),
                 "appVersion": APP_VERSION,
@@ -262,13 +275,13 @@ class FryerClient:
                 "method": "devices",
                 "pageNo": 1,
                 "pageSize": 100,
-                "accountID": self.session.account_id,
-                "token": self.session.token,
+                "accountID": session.account_id,
+                "token": session.token,
             }
 
         answer = await self._authorised("/cloud/v1/deviceManaged/devices", body)
         for item in (answer.get("result") or {}).get("list") or []:
-            if item.get("deviceType") == DEVICE_TYPE:
+            if item.get("deviceType") == DEVICE_TYPE and item.get("cid") and item.get("configModule"):
                 self.device = Device(
                     cid=item["cid"],
                     name=item.get("deviceName") or "Air fryer",
@@ -276,22 +289,20 @@ class FryerClient:
                     region=item.get("deviceRegion") or "US",
                 )
                 return self.device
-        raise FryerError(f"No {DEVICE_TYPE} on this VeSync account")
+        raise NoFryer(f"No {DEVICE_TYPE} on this VeSync account")
 
-    async def _call(
-        self, method: str, data: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
+    async def _call(self, method: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
         device = self.device or await self.find_fryer()
 
         def body() -> dict[str, Any]:
-            assert self.session
+            session = self._require_session()
             return {
                 **self._common(),
                 "appVersion": APP_VERSION,
                 "phoneBrand": "pyvesync",
                 "phoneOS": "Android",
-                "accountID": self.session.account_id,
-                "token": self.session.token,
+                "accountID": session.account_id,
+                "token": session.token,
                 "cid": device.cid,
                 "deviceId": device.cid,
                 "configModule": device.config_module,
@@ -313,11 +324,11 @@ class FryerClient:
     async def start(self, temperature: int, minutes: int, *, preheat: bool) -> None:
         """Start a manual program, with or without a preheat phase first."""
         check_settings(temperature, minutes)
-        assert self.session
+        session = self._require_session()
         await self._call(
             "startCook",
             {
-                "accountId": self.session.account_id,
+                "accountId": session.account_id,
                 "hasPreheat": 1 if preheat else 0,
                 "hasWarm": False,
                 "hasLinkage": False,
@@ -336,15 +347,9 @@ class FryerClient:
             },
         )
 
-    async def air_fry(
-        self, temperature: int, minutes: int, *, clear_first: bool
-    ) -> None:
-        """Cook now. A loaded program (for example after preheat) is cleared first."""
-        check_settings(temperature, minutes)
-        if clear_first:
-            await self.stop()
-            await asyncio.sleep(SETTLE_SECONDS)
-        await self.start(temperature, minutes, preheat=False)
+    async def continue_after_preheat(self) -> None:
+        """Start the cook queued behind a finished preheat, as the fryer's Start button does."""
+        await self._call("preheatCook")
 
     async def stop(self) -> None:
         await self._call("endCook")

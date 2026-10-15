@@ -7,13 +7,11 @@ import uuid
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, Platform
-from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import (
-    ConfigEntryAuthFailed,
-    ConfigEntryNotReady,
-    ServiceValidationError,
-)
+from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 
@@ -23,11 +21,8 @@ from .api import (
     TEMP_MAX,
     TEMP_MIN,
     TEMP_STEP,
-    AuthError,
     FryerClient,
-    FryerError,
     Session,
-    TokenRejected,
 )
 from .const import (
     CONF_ACCOUNT_ID,
@@ -57,38 +52,31 @@ def _coordinator(hass: HomeAssistant) -> FryerCoordinator:
     for entry in hass.config_entries.async_entries(DOMAIN):
         if entry.state is ConfigEntryState.LOADED:
             return entry.runtime_data
-    raise ServiceValidationError(
-        translation_domain=DOMAIN, translation_key="not_loaded"
-    )
+    raise ServiceValidationError(translation_domain=DOMAIN, translation_key="not_loaded")
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Register the fryer's actions."""
+    """Register the fryer's action."""
 
-    async def preheat(call: ServiceCall) -> None:
-        await _coordinator(hass).preheat(call.data["temperature"])
-
-    async def air_fry(call: ServiceCall) -> None:
-        await _coordinator(hass).air_fry(call.data["temperature"], call.data["minutes"])
-
-    async def stop(call: ServiceCall) -> None:
-        await _coordinator(hass).stop()
+    async def start_cooking(call: ServiceCall) -> None:
+        await _coordinator(hass).start_cooking(
+            call.data["temperature"],
+            call.data["cooking_time"],
+            preheat=call.data["preheat"],
+        )
 
     hass.services.async_register(
         DOMAIN,
-        "preheat",
-        preheat,
-        vol.Schema({vol.Required("temperature"): TEMPERATURE}),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        "air_fry",
-        air_fry,
+        "start_cooking",
+        start_cooking,
         vol.Schema(
-            {vol.Required("temperature"): TEMPERATURE, vol.Required("minutes"): MINUTES}
+            {
+                vol.Required("temperature"): TEMPERATURE,
+                vol.Required("cooking_time"): MINUTES,
+                vol.Optional("preheat", default=False): cv.boolean,
+            }
         ),
     )
-    hass.services.async_register(DOMAIN, "stop", stop)
     return True
 
 
@@ -113,22 +101,64 @@ async def async_setup_entry(hass: HomeAssistant, entry: FryerConfigEntry) -> boo
         hass.config.time_zone,
     )
     coordinator = FryerCoordinator(hass, entry, client)
-    try:
-        # Reuse the stored session; a new login only happens if VeSync rejects it.
-        await coordinator._signed_in(client.find_fryer)  # noqa: SLF001
-    except (AuthError, ConfigEntryAuthFailed) as err:
-        raise ConfigEntryAuthFailed(str(err)) from err
-    except (FryerError, TokenRejected) as err:
-        raise ConfigEntryNotReady(str(err)) from err
-
+    # Finds the fryer, then reads it. The stored session is reused; a new
+    # login only happens if VeSync rejects it.
     await coordinator.async_config_entry_first_refresh()
+    if client.device is not None:  # Always set once the first refresh succeeded.
+        await _migrate_unique_ids(hass, entry, client.device.cid)
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
+# Entity keys used by earlier releases, by platform, and what they are now.
+_RENAMED = {
+    "sensor": {
+        "status": "cook_status",
+        "target_temp": "cook_set_temp",
+        "set_temperature": "cook_set_temp",
+        "time_remaining": "remaining_time",
+    },
+    "number": {
+        "target_temp": "cook_temperature",
+        "temperature": "cook_temperature",
+        "cook_minutes": "cook_time",
+        "minutes": "cook_time",
+    },
+    "button": {"air_fry": "start"},
+}
+
+
+async def _migrate_unique_ids(hass: HomeAssistant, entry: FryerConfigEntry, cid: str) -> None:
+    """Keep the device, entities, their IDs and history across the renames in 0.3 and 0.4."""
+    devices = dr.async_get(hass)
+    old_device = devices.async_get_device({(DOMAIN, entry.entry_id)})
+    if old_device and not devices.async_get_device({(DOMAIN, cid)}):
+        # 0.2 identified the device by entry id; keep the same device, and its device_id.
+        devices.async_update_device(old_device.id, new_identifiers={(DOMAIN, cid)})
+
+    registry = er.async_get(hass)
+
+    @callback
+    def rename(entity: er.RegistryEntry) -> dict[str, str] | None:
+        for prefix in (f"{entry.entry_id}_", f"{cid}_"):
+            if not entity.unique_id.startswith(prefix):
+                continue
+            old_key = entity.unique_id.removeprefix(prefix)
+            new_key = _RENAMED.get(entity.domain, {}).get(old_key, old_key)
+            new_id = f"{cid}_{new_key}"
+            if new_id == entity.unique_id or registry.async_get_entity_id(entity.domain, DOMAIN, new_id):
+                return None
+            return {"new_unique_id": new_id}
+        return None
+
+    await er.async_migrate_entries(hass, entry.entry_id, rename)
+
+
 async def async_migrate_entry(hass: HomeAssistant, entry: FryerConfigEntry) -> bool:
     """Version 1 entries signed in on every start and had no client id."""
+    if entry.version > 2:
+        return False  # Written by a newer release.
     if entry.version == 1:
         hass.config_entries.async_update_entry(
             entry,

@@ -5,7 +5,7 @@ from datetime import timedelta
 DOMAIN = "cosori_fryer"
 
 CONF_TERMINAL_ID = "terminal_id"
-CONF_TOKEN = "token"
+CONF_TOKEN = "token"  # noqa: S105 - a config key, not a secret
 CONF_ACCOUNT_ID = "account_id"
 CONF_COUNTRY_CODE = "country_code"
 CONF_REGION = "region"
@@ -23,16 +23,17 @@ DEFAULT_MINUTES = 10
 EVENT_PREHEAT_DONE = "cosori_fryer_preheat_done"
 EVENT_COOK_DONE = "cosori_fryer_cook_done"
 
-# Fryer status codes and the state names shown for them.
+# Fryer status codes and the state keys used for them. The first eight match
+# Home Assistant's built-in VeSync integration.
 STATUS = {
-    "standby": "idle",
-    "cookEnd": "finished",
-    "pullOut": "basket_out",
-    "ready": "ready",
-    "heating": "preheating",
-    "preheatStop": "preheat_paused",
-    "preheatEnd": "preheated",
+    "standby": "standby",
+    "heating": "heating",
+    "preheatStop": "preheat_stop",
+    "preheatEnd": "preheat_end",
     "cooking": "cooking",
-    "cookStop": "paused",
+    "cookStop": "cooking_stop",
+    "cookEnd": "cooking_end",
+    "pullOut": "pull_out",
+    "ready": "ready",
     "keeping": "keeping_warm",
 }

@@ -28,6 +28,10 @@ class FryerSensorDescription(SensorEntityDescription):
     value: Callable[[FryerStatus], str | int | None]
 
 
+def _minutes(seconds: int | None) -> int | None:
+    return None if seconds is None else math.ceil(seconds / 60)
+
+
 SENSORS = (
     FryerSensorDescription(
         key="cook_status",
@@ -36,17 +40,28 @@ SENSORS = (
         value=lambda s: STATUS.get(s.state),
     ),
     FryerSensorDescription(
-        key="set_temperature",
+        key="cook_set_temp",
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.FAHRENHEIT,
-        value=lambda s: None if s.idle else s.target_temp,
+        value=lambda s: None if s.idle else s.cook_set_temp,
     ),
     FryerSensorDescription(
-        key="time_remaining",
+        key="cook_set_time",
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.MINUTES,
-        suggested_display_precision=0,
-        value=lambda s: math.ceil(s.seconds_left / 60),
+        value=lambda s: None if s.idle else _minutes(s.cook_set_time),
+    ),
+    FryerSensorDescription(
+        key="preheat_set_time",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        value=lambda s: _minutes(s.preheat_set_time),
+    ),
+    FryerSensorDescription(
+        key="remaining_time",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        value=lambda s: _minutes(s.seconds_left),
     ),
 )
 
@@ -56,17 +71,13 @@ async def async_setup_entry(
     entry: FryerConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    async_add_entities(
-        FryerSensor(entry.runtime_data, description) for description in SENSORS
-    )
+    async_add_entities(FryerSensor(entry.runtime_data, description) for description in SENSORS)
 
 
 class FryerSensor(FryerEntity, SensorEntity):
     entity_description: FryerSensorDescription
 
-    def __init__(
-        self, coordinator: FryerCoordinator, description: FryerSensorDescription
-    ) -> None:
+    def __init__(self, coordinator: FryerCoordinator, description: FryerSensorDescription) -> None:
         super().__init__(coordinator, description.key)
         self.entity_description = description
 

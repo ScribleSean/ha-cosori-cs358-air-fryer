@@ -4,18 +4,31 @@
       "user": {
         "title": "VeSync account",
         "description": "Sign in with the VeSync account that has the air fryer.",
-        "data": { "email": "Email", "password": "Password" }
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        },
+        "data_description": {
+          "email": "The email of the VeSync account the fryer is on.",
+          "password": "The password for that VeSync account."
+        }
       },
       "reauth_confirm": {
         "title": "Sign in again",
         "description": "VeSync rejected the saved password for {email}. Enter the current one.",
-        "data": { "password": "Password" }
+        "data": {
+          "password": "Password"
+        },
+        "data_description": {
+          "password": "The current password for this VeSync account."
+        }
       }
     },
     "error": {
       "invalid_auth": "VeSync rejected that email or password.",
       "cannot_connect": "Couldn't reach VeSync. Try again in a few minutes.",
-      "no_fryer": "There's no CS358-AF air fryer on this VeSync account."
+      "no_fryer": "There's no CS358-AF air fryer on this VeSync account.",
+      "unknown": "Something unexpected went wrong. Check the logs."
     },
     "abort": {
       "already_configured": "This VeSync account is already set up.",
@@ -25,54 +38,92 @@
   },
   "entity": {
     "button": {
-      "preheat": { "name": "Preheat" },
-      "air_fry": { "name": "Air fry" },
-      "stop": { "name": "Stop" }
+      "preheat": {
+        "name": "Preheat"
+      },
+      "start": {
+        "name": "Start"
+      },
+      "stop": {
+        "name": "Stop"
+      }
     },
     "number": {
-      "temperature": { "name": "Cook temperature" },
-      "minutes": { "name": "Cook time" }
+      "cook_temperature": {
+        "name": "Cooking temperature"
+      },
+      "cook_time": {
+        "name": "Cooking time"
+      }
     },
     "sensor": {
       "cook_status": {
         "name": "Cooking status",
         "state": {
-          "idle": "Idle",
-          "finished": "Finished",
-          "basket_out": "Basket out",
-          "ready": "Waiting for Start",
-          "preheating": "Preheating",
-          "preheat_paused": "Preheat paused",
-          "preheated": "Preheated",
+          "standby": "Standby",
+          "heating": "Preheating",
+          "preheat_stop": "Preheating stopped",
+          "preheat_end": "Preheating finished",
           "cooking": "Cooking",
-          "paused": "Paused",
+          "cooking_stop": "Cooking stopped",
+          "cooking_end": "Cooking finished",
+          "pull_out": "Drawer pulled out",
+          "ready": "Ready",
           "keeping_warm": "Keeping warm"
         }
       },
-      "set_temperature": { "name": "Set temperature" },
-      "time_remaining": { "name": "Time remaining" }
+      "cook_set_temp": {
+        "name": "Cooking set temperature"
+      },
+      "cook_set_time": {
+        "name": "Cooking set time"
+      },
+      "preheat_set_time": {
+        "name": "Preheating set time"
+      },
+      "remaining_time": {
+        "name": "Remaining time"
+      }
     }
   },
   "exceptions": {
-    "not_loaded": { "message": "The air fryer isn't set up." },
-    "cannot_preheat": { "message": "The air fryer can only preheat when it's idle. It's {state}." },
-    "cannot_air_fry": { "message": "The air fryer can only start cooking when it's idle or preheated. It's {state}." },
-    "cannot_stop": { "message": "Nothing is running on the air fryer." }
+    "not_loaded": {
+      "message": "The air fryer isn't set up."
+    },
+    "cannot_preheat": {
+      "message": "The air fryer can only preheat from standby or after cooking finished. It's {state}."
+    },
+    "cannot_start": {
+      "message": "The air fryer can only start from standby, after cooking finished, or when preheating has finished. It's {state}."
+    },
+    "cannot_stop": {
+      "message": "Nothing is running on the air fryer."
+    },
+    "auth_failed": {
+      "message": "VeSync rejected the saved password. Sign in again from Settings."
+    },
+    "command_failed": {
+      "message": "The air fryer didn't respond: {error}"
+    }
   },
   "services": {
-    "preheat": {
-      "name": "Preheat",
-      "description": "Preheat the air fryer.",
-      "fields": { "temperature": { "name": "Temperature", "description": "170 to 400 °F, in steps of 10." } }
-    },
-    "air_fry": {
-      "name": "Air fry",
-      "description": "Cook at a temperature for a time. After a preheat, replaces the preheat program.",
+    "start_cooking": {
+      "name": "Start cooking",
+      "description": "Start a manual cooking program, optionally preheating first. The fryer must be in standby or finished.",
       "fields": {
-        "temperature": { "name": "Temperature", "description": "170 to 400 °F, in steps of 10." },
-        "minutes": { "name": "Cook time", "description": "1 to 60 minutes." }
+        "temperature": {
+          "name": "Temperature",
+          "description": "170 to 400 °F, in steps of 10."
+        },
+        "cooking_time": {
+          "name": "Cooking time",
+          "description": "1 to 60 minutes."
+        },
+        "preheat": {
+          "name": "Preheat",
+          "description": "Preheat first. Press Start when preheating has finished to begin cooking."
+        }
       }
-    },
-    "stop": { "name": "Stop", "description": "Stop preheating or cooking." }
+    }
   }
 }

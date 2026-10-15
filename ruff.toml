@@ -1,0 +1,10 @@
+target-version = "py313"
+line-length = 110
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "S", "SLF"]
+ignore = ["E501"]
+
+[lint.per-file-ignores]
+"tests/*" = ["S101", "S324", "SLF001"]
+"custom_components/cosori_fryer/api.py" = ["S324"]  # VeSync's login protocol requires an MD5 of the password.

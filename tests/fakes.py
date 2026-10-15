@@ -7,6 +7,7 @@ from typing import Any
 from custom_components.cosori_fryer.api import (
     Device,
     FryerStatus,
+    NoFryer,
     Session,
     TokenRejected,
     check_settings,
@@ -24,9 +25,7 @@ def raw(state: str, **extra: Any) -> dict[str, Any]:
     result = {
         "cookStatus": state,
         "stepIndex": 0,
-        "stepArray": [
-            {"cookTemp": 360, "cookSetTime": 600, "cookLastTime": 600, "mode": "Custom"}
-        ],
+        "stepArray": [{"cookTemp": 360, "cookSetTime": 600, "cookLastTime": 600, "mode": "Custom"}],
         "preheatTemp": 360,
         "preheatSetTime": 240,
         "preheatLastTime": 0,
@@ -48,6 +47,7 @@ class FakeClient:
         self.reject_token = False
         self.login_error: Exception | None = None
         self.find_error: Exception | None = None
+        self.no_fryer = False
 
     async def login(self) -> Session:
         self.logins += 1
@@ -65,6 +65,8 @@ class FakeClient:
         await self._guard()
         if self.find_error:
             raise self.find_error
+        if self.no_fryer:
+            raise NoFryer("No CS358-AF on this VeSync account")
         self.device = DEVICE
         return DEVICE
 
@@ -76,11 +78,8 @@ class FakeClient:
         check_settings(temperature, minutes)
         self.commands.append(("start", temperature, minutes, preheat))
 
-    async def air_fry(
-        self, temperature: int, minutes: int, *, clear_first: bool
-    ) -> None:
-        check_settings(temperature, minutes)
-        self.commands.append(("air_fry", temperature, minutes, clear_first))
+    async def continue_after_preheat(self) -> None:
+        self.commands.append(("continue",))
 
     async def stop(self) -> None:
         self.commands.append(("stop",))

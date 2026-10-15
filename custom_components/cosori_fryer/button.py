@@ -1,4 +1,4 @@
-"""Preheat, Air fry and Stop. Each is unavailable when the fryer can't do it."""
+"""Preheat, Start and Stop, as on the fryer. Each is unavailable when it can't be used."""
 
 from __future__ import annotations
 
@@ -26,12 +26,12 @@ BUTTONS = (
     FryerButtonDescription(
         key="preheat",
         possible=lambda s: s.can_preheat,
-        press=lambda c: c.preheat(c.temperature),
+        press=lambda c: c.start_cooking(c.temperature, c.minutes, preheat=True),
     ),
     FryerButtonDescription(
-        key="air_fry",
-        possible=lambda s: s.can_air_fry,
-        press=lambda c: c.air_fry(c.temperature, c.minutes),
+        key="start",
+        possible=lambda s: s.can_start,
+        press=lambda c: c.press_start(),
     ),
     FryerButtonDescription(
         key="stop",
@@ -46,17 +46,13 @@ async def async_setup_entry(
     entry: FryerConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    async_add_entities(
-        FryerButton(entry.runtime_data, description) for description in BUTTONS
-    )
+    async_add_entities(FryerButton(entry.runtime_data, description) for description in BUTTONS)
 
 
 class FryerButton(FryerEntity, ButtonEntity):
     entity_description: FryerButtonDescription
 
-    def __init__(
-        self, coordinator: FryerCoordinator, description: FryerButtonDescription
-    ) -> None:
+    def __init__(self, coordinator: FryerCoordinator, description: FryerButtonDescription) -> None:
         super().__init__(coordinator, description.key)
         self.entity_description = description
 
