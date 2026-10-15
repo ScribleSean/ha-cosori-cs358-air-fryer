@@ -1,4 +1,4 @@
-preheat:
+start_cooking:
   fields:
     temperature:
       required: true
@@ -9,18 +9,7 @@ preheat:
           max: 400
           step: 10
           unit_of_measurement: "°F"
-air_fry:
-  fields:
-    temperature:
-      required: true
-      default: 360
-      selector:
-        number:
-          min: 170
-          max: 400
-          step: 10
-          unit_of_measurement: "°F"
-    minutes:
+    cooking_time:
       required: true
       default: 10
       selector:
@@ -28,4 +17,7 @@ air_fry:
           min: 1
           max: 60
           unit_of_measurement: min
-stop:
+    preheat:
+      default: false
+      selector:
+        boolean:

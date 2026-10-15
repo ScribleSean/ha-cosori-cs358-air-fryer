@@ -16,7 +16,8 @@ class FryerEntity(CoordinatorEntity[FryerCoordinator]):
     def __init__(self, coordinator: FryerCoordinator, key: str) -> None:
         super().__init__(coordinator)
         device = coordinator.client.device
-        assert device is not None
+        if device is None:  # Entities are only created after the fryer was found.
+            raise RuntimeError("Fryer entity created before the fryer was found")
         self._attr_translation_key = key
         self._attr_unique_id = f"{device.cid}_{key}"
         self._attr_device_info = DeviceInfo(

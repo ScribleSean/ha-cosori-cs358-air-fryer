@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -13,6 +14,7 @@ from homeassistant.exceptions import (
     HomeAssistantError,
     ServiceValidationError,
 )
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import AuthError, FryerClient, FryerError, FryerStatus, TokenRejected
@@ -36,47 +38,59 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 # Statuses worth watching closely.
-_BUSY = {
-    "heating",
-    "preheatStop",
-    "preheatEnd",
-    "ready",
-    "cooking",
-    "cookStop",
-    "keeping",
-}
+_BUSY = {"heating", "preheatStop", "preheatEnd", "ready", "cooking", "cookStop", "keeping"}
 
 type FryerConfigEntry = ConfigEntry[FryerCoordinator]
 
 
 class FryerCoordinator(DataUpdateCoordinator[FryerStatus]):
-    """Reads the fryer every 30 s while busy and every minute when idle."""
+    """Reads the fryer every 30 s while busy and every minute in standby."""
 
     config_entry: FryerConfigEntry
 
-    def __init__(
-        self, hass: HomeAssistant, entry: FryerConfigEntry, client: FryerClient
-    ) -> None:
-        super().__init__(
-            hass, _LOGGER, config_entry=entry, name=DOMAIN, update_interval=POLL_IDLE
-        )
+    def __init__(self, hass: HomeAssistant, entry: FryerConfigEntry, client: FryerClient) -> None:
+        super().__init__(hass, _LOGGER, config_entry=entry, name=DOMAIN, update_interval=POLL_IDLE)
         self.client = client
-        # The values the Preheat and Air fry buttons use, set by the number entities.
+        # The values the Preheat and Start buttons use, set by the number entities.
         self.temperature = DEFAULT_TEMPERATURE
         self.minutes = DEFAULT_MINUTES
         self._busy_until = 0.0
-        self._last_login = 0.0
+        self._last_login: float | None = None
+        self._login_lock = asyncio.Lock()
+        self._command_lock = asyncio.Lock()
+
+    async def _async_setup(self) -> None:
+        """Find the fryer once, before the first status read."""
+        try:
+            await self._signed_in(self.client.find_fryer)
+        except FryerError as err:
+            raise UpdateFailed(str(err)) from err
+        session = self.client.session
+        if session is None or self.config_entry.unique_id == session.account_id:
+            return
+        # Entries from before 0.3.0 used the email as their unique id.
+        other = self.hass.config_entries.async_entry_for_domain_unique_id(DOMAIN, session.account_id)
+        if other is None:
+            self.hass.config_entries.async_update_entry(self.config_entry, unique_id=session.account_id)
 
     async def _signed_in[T](self, request: Callable[[], Awaitable[T]]) -> T:
         """Run a request, signing in again once if VeSync rejects the token."""
+        token = self.client.session.token if self.client.session else None
         try:
             return await request()
         except TokenRejected:
-            if time.monotonic() - self._last_login < RELOGIN_COOLDOWN_SECONDS:
-                raise FryerError(
-                    "Signed out by another VeSync login; trying again shortly"
-                ) from None
-            self._last_login = time.monotonic()
+            await self._sign_in_again(token)
+            return await request()
+
+    async def _sign_in_again(self, rejected_token: str | None) -> None:
+        async with self._login_lock:
+            current = self.client.session.token if self.client.session else None
+            if current and current != rejected_token:
+                return  # Someone else already signed in while we waited.
+            now = time.monotonic()
+            if self._last_login is not None and now - self._last_login < RELOGIN_COOLDOWN_SECONDS:
+                raise FryerError("Signed out by another VeSync login; trying again shortly")
+            self._last_login = now
             try:
                 session = await self.client.login()
             except AuthError as err:
@@ -91,7 +105,6 @@ class FryerCoordinator(DataUpdateCoordinator[FryerStatus]):
                     CONF_REGION: session.region,
                 },
             )
-            return await request()
 
     async def _async_update_data(self) -> FryerStatus:
         try:
@@ -103,21 +116,26 @@ class FryerCoordinator(DataUpdateCoordinator[FryerStatus]):
             self._announce(self.data.state, status.state)
         if status.state in _BUSY:
             self._busy_until = time.monotonic() + ACTIVE_LINGER_SECONDS
-        self.update_interval = (
-            POLL_ACTIVE if time.monotonic() < self._busy_until else POLL_IDLE
-        )
+        self.update_interval = POLL_ACTIVE if time.monotonic() < self._busy_until else POLL_IDLE
         return status
 
     def _announce(self, before: str, after: str) -> None:
-        """Fire an event when preheat finishes and when a cook finishes."""
+        """Fire an event when preheating finishes and when cooking finishes on its own.
+
+        A stopped cook goes to standby, a finished one to cookEnd, so Stop fires nothing.
+        """
         if before == "heating" and after == "preheatEnd":
-            self.hass.bus.async_fire(
-                EVENT_PREHEAT_DONE, {"entry_id": self.config_entry.entry_id}
-            )
-        elif before == "cooking" and after in ("cookEnd", "standby"):
-            self.hass.bus.async_fire(
-                EVENT_COOK_DONE, {"entry_id": self.config_entry.entry_id}
-            )
+            event = EVENT_PREHEAT_DONE
+        elif before == "cooking" and after == "cookEnd":
+            event = EVENT_COOK_DONE
+        else:
+            return
+        data = {"entry_id": self.config_entry.entry_id}
+        if self.client.device:
+            device = dr.async_get(self.hass).async_get_device({(DOMAIN, self.client.device.cid)})
+            if device:
+                data["device_id"] = device.id
+        self.hass.bus.async_fire(event, data)
 
     async def _command(
         self,
@@ -125,46 +143,49 @@ class FryerCoordinator(DataUpdateCoordinator[FryerStatus]):
         refusal: str,
         action: Callable[[FryerStatus], Awaitable[None]],
     ) -> None:
-        """Read the fryer's current state, check it allows the action, then run it."""
-        try:
-            status = await self._signed_in(self.client.status)
-        except FryerError as err:
-            raise HomeAssistantError(str(err)) from err
-        if not allowed(status):
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key=refusal,
-                translation_placeholders={
-                    "state": STATUS.get(status.state, status.state).replace("_", " ")
-                },
-            )
-        try:
-            await self._signed_in(lambda: action(status))
-        except FryerError as err:
-            raise HomeAssistantError(str(err)) from err
-        except ValueError as err:
-            raise ServiceValidationError(str(err)) from err
+        """Read the fryer's state, check it allows the action, then run it, one command at a time."""
+        async with self._command_lock:
+            try:
+                status = await self._signed_in(self.client.status)
+                if not allowed(status):
+                    raise ServiceValidationError(
+                        translation_domain=DOMAIN,
+                        translation_key=refusal,
+                        translation_placeholders={
+                            "state": STATUS.get(status.state, status.state).replace("_", " ")
+                        },
+                    )
+                await self._signed_in(lambda: action(status))
+            except ConfigEntryAuthFailed as err:
+                self.config_entry.async_start_reauth(self.hass)
+                raise HomeAssistantError(translation_domain=DOMAIN, translation_key="auth_failed") from err
+            except FryerError as err:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="command_failed",
+                    translation_placeholders={"error": str(err)},
+                ) from err
         self._busy_until = time.monotonic() + ACTIVE_LINGER_SECONDS
         await self.async_request_refresh()
 
-    async def preheat(self, temperature: int) -> None:
-        """Preheat. The fryer needs a cook queued behind a preheat; Air fry replaces it."""
-        minutes = self.minutes
+    async def start_cooking(self, temperature: int, minutes: int, *, preheat: bool) -> None:
+        """Start a manual program, optionally preheating first."""
         await self._command(
-            lambda s: s.can_preheat,
-            "cannot_preheat",
-            lambda _: self.client.start(temperature, minutes, preheat=True),
+            lambda s: s.can_preheat if preheat else s.idle,
+            "cannot_preheat" if preheat else "cannot_start",
+            lambda _: self.client.start(temperature, minutes, preheat=preheat),
         )
 
-    async def air_fry(self, temperature: int, minutes: int) -> None:
-        """Cook now, from idle or after a preheat."""
-        await self._command(
-            lambda s: s.can_air_fry,
-            "cannot_air_fry",
-            lambda s: self.client.air_fry(temperature, minutes, clear_first=s.waiting),
-        )
+    async def press_start(self) -> None:
+        """The fryer's Start button: cook from standby, or continue once preheated."""
+
+        async def start(status: FryerStatus) -> None:
+            if status.preheated:
+                await self.client.continue_after_preheat()
+            else:
+                await self.client.start(self.temperature, self.minutes, preheat=False)
+
+        await self._command(lambda s: s.can_start, "cannot_start", start)
 
     async def stop(self) -> None:
-        await self._command(
-            lambda s: s.can_stop, "cannot_stop", lambda _: self.client.stop()
-        )
+        await self._command(lambda s: s.can_stop, "cannot_stop", lambda _: self.client.stop())

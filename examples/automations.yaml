@@ -9,7 +9,7 @@
     - action: notify.mobile_app_your_phone
       data:
         title: Air fryer preheated
-        message: Add food, then press Air fry.
+        message: Add food, then press Start.
 
 - id: air_fryer_done
   alias: "Air fryer: done"
