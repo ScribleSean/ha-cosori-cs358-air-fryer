@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import logging
-import time
 import uuid
 from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
@@ -22,8 +21,8 @@ from .const import (
     CONF_TERMINAL_ID,
     CONF_TOKEN,
     DOMAIN,
-    RELOGIN_COOLDOWN_SECONDS,
 )
+from .coordinator import forget_login, last_login, login_allowed, note_login
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,10 +37,9 @@ class FryerConfigFlow(ConfigFlow, domain=DOMAIN):
         # Kept between attempts, so retrying after "no fryer" doesn't sign in again.
         self._client: FryerClient | None = None
         self._credentials: tuple[str, str] | None = None
-        self._login_time: float | None = None
 
     async def _sign_in(
-        self, email: str, password: str, terminal_id: str
+        self, email: str, password: str, terminal_id: str, entry: ConfigEntry | None = None
     ) -> tuple[dict[str, Any] | None, str | None, str | None]:
         """Return (entry data, fryer name, error key)."""
         if self._client is None or self._credentials != (email, password) or self._client.session is None:
@@ -56,13 +54,15 @@ class FryerConfigFlow(ConfigFlow, domain=DOMAIN):
         client = self._client
         try:
             if client.session is None:
-                if self._login_time is not None and time.time() - self._login_time < RELOGIN_COOLDOWN_SECONDS:
-                    return None, None, "rate_limited"  # Repeated submits must not hammer VeSync.
-                self._login_time = time.time()
+                # Repeated or reopened forms must not hammer VeSync.
+                if not login_allowed(self.hass, email, entry):
+                    return None, None, "rate_limited"
+                note_login(self.hass, email, entry)
                 await client.login()
             device = await client.find_fryer()
         except AuthError:
             self._client = None
+            forget_login(self.hass, email, entry)
             return None, None, "invalid_auth"
         except RateLimited:
             return None, None, "rate_limited"
@@ -90,7 +90,7 @@ class FryerConfigFlow(ConfigFlow, domain=DOMAIN):
             CONF_COUNTRY_CODE: session.country_code,
             CONF_REGION: session.region,
             # Starts the re-login cooldown from this sign-in.
-            CONF_LAST_LOGIN: self._login_time,
+            CONF_LAST_LOGIN: last_login(self.hass, email, entry),
         }
         return data, device.name, None
 
@@ -128,7 +128,7 @@ class FryerConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             data, _, error = await self._sign_in(
-                entry.data[CONF_EMAIL], user_input[CONF_PASSWORD], entry.data[CONF_TERMINAL_ID]
+                entry.data[CONF_EMAIL], user_input[CONF_PASSWORD], entry.data[CONF_TERMINAL_ID], entry
             )
             if data is None:
                 errors["base"] = error or "unknown"
