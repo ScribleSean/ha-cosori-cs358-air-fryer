@@ -1,102 +1,86 @@
-"""Fakes shared by the tests. The VeSync cloud is never contacted."""
+"""Fakes shared by the tests. VeSync is never contacted."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from typing import Any
 
-import cosori358
-from cosori358 import FryerStatus
+from custom_components.cosori_fryer.api import (
+    Device,
+    FryerStatus,
+    Session,
+    TokenRejected,
+    check_settings,
+)
 
-DEVICE = {
-    "deviceName": "Air Fryer",
-    "deviceType": "CS358-AF",
-    "configModule": "WiFiBTOnboarding_AirFryer_CS358-AF_US",
-    "connectionStatus": "online",
-    "deviceRegion": "US",
-    "cid": "CID-SECRET",
-}
+DEVICE = Device(
+    cid="CID-1",
+    name="Air Fryer",
+    config_module="WiFiBTOnboarding_AirFryer_CS358-AF_US",
+    region="US",
+)
 
 
-def status_result(cook_status: str, **extra) -> dict:
+def raw(state: str, **extra: Any) -> dict[str, Any]:
     result = {
-        "stepArray": [{"cookSetTime": 720, "cookTemp": 360, "cookLastTime": 0, "mode": "Custom"}],
+        "cookStatus": state,
         "stepIndex": 0,
-        "cookStatus": cook_status,
-        "tempUnit": "f",
-        "preheatSetTime": 0,
+        "stepArray": [
+            {"cookTemp": 360, "cookSetTime": 600, "cookLastTime": 600, "mode": "Custom"}
+        ],
+        "preheatTemp": 360,
+        "preheatSetTime": 240,
         "preheatLastTime": 0,
-        "preheatTemp": 0,
-        "totalTimeRemaining": 0,
-        "currentTemp": 0,
+        "totalTimeRemaining": 600,
     }
     result.update(extra)
     return result
 
 
-def make_status(cook_status: str, **extra) -> FryerStatus:
-    return FryerStatus.from_result(status_result(cook_status, **extra))
+class FakeClient:
+    """Stands in for FryerClient, recording the commands it is given."""
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.session = kwargs.get("session") or (args[4] if len(args) > 4 else None)
+        self.device: Device | None = None
+        self.result = raw("standby")
+        self.commands: list[tuple] = []
+        self.logins = 0
+        self.reject_token = False
+        self.login_error: Exception | None = None
+        self.find_error: Exception | None = None
 
-TOKEN_EXPIRED = {"code": -11001000, "msg": "token expired"}
+    async def login(self) -> Session:
+        self.logins += 1
+        if self.login_error:
+            raise self.login_error
+        self.reject_token = False
+        self.session = Session(token=f"token-{self.logins}", account_id="ACCOUNT-1")
+        return self.session
 
+    async def _guard(self) -> None:
+        if self.session is None or self.reject_token:
+            raise TokenRejected("rejected")
 
-class FakeResponse:
-    status = 200
+    async def find_fryer(self) -> Device:
+        await self._guard()
+        if self.find_error:
+            raise self.find_error
+        self.device = DEVICE
+        return DEVICE
 
-    def __init__(self, data):
-        self._data = data
+    async def status(self) -> FryerStatus:
+        await self._guard()
+        return FryerStatus.parse(self.result)
 
-    async def json(self, content_type=None):
-        return self._data
+    async def start(self, temperature: int, minutes: int, *, preheat: bool) -> None:
+        check_settings(temperature, minutes)
+        self.commands.append(("start", temperature, minutes, preheat))
 
-    async def __aenter__(self):
-        return self
+    async def air_fry(
+        self, temperature: int, minutes: int, *, clear_first: bool
+    ) -> None:
+        check_settings(temperature, minutes)
+        self.commands.append(("air_fry", temperature, minutes, clear_first))
 
-    async def __aexit__(self, *exc):
-        return False
-
-
-class FakeSession:
-    """Records every request and answers from `handler(url, body)`."""
-
-    def __init__(self, handler):
-        self.handler = handler
-        self.calls: list[tuple[str, dict]] = []
-
-    def request(self, method, url, json=None, headers=None, **kwargs):
-        self.calls.append((url, json))
-        return FakeResponse(self.handler(url, json))
-
-
-def make_manager(cook_status: str = "standby", inner_code: int = 0):
-    """A fake pyvesync manager that answers device list and bypassV2 calls."""
-    manager = SimpleNamespace(
-        account_id="ACCOUNT-SECRET",
-        token="TOKEN-SECRET",
-        time_zone="America/New_York",
-        country_code="US",
-        current_region="US",
-        cook_status=cook_status,
-        status_overrides={},
-        login=AsyncMock(return_value=True),
-        _api_base_url_for_current_region=lambda: "https://vesync.test",
-    )
-
-    def handler(url, body):
-        if url.endswith(cosori358.DEVICE_LIST_PATH):
-            return {"code": 0, "result": {"list": [DEVICE]}}
-        if body["payload"]["method"] == "getAirfryerStatus":
-            return {"code": 0, "result": {"code": 0, "result": {**status_result(manager.cook_status), **manager.status_overrides}}}
-        return {"code": 0, "result": {"code": inner_code, "result": {}}}
-
-    manager.session = FakeSession(handler)
-    return manager
-
-
-def sent_methods(manager) -> list[str]:
-    return [
-        body["payload"]["method"]
-        for url, body in manager.session.calls
-        if url.endswith(cosori358.BYPASS_V2_PATH)
-    ]
+    async def stop(self) -> None:
+        self.commands.append(("stop",))

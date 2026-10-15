@@ -1,15 +1,15 @@
+# Copy to custom_sentences/en/air_fryer.yaml
 language: "en"
 intents:
   FryerPreheat:
     data:
       - sentences:
-          - "preheat [the] air fryer to {temp} [degrees] for {minutes} minute[s]"
-          - "preheat [the] air fryer to {temp} [degrees] and cook for {minutes} minute[s]"
-  FryerStart:
+          - "preheat [the] air fryer [to] {temperature} [degrees]"
+  FryerAirFry:
     data:
       - sentences:
-          - "start [the] air fryer"
-          - "start cooking [in the air fryer]"
+          - "air fry [for] {minutes} minute[s] at {temperature} [degrees]"
+          - "air fry at {temperature} [degrees] for {minutes} minute[s]"
   FryerStop:
     data:
       - sentences:
@@ -18,17 +18,12 @@ intents:
     data:
       - sentences:
           - "how (long|much time) is left on [the] air fryer"
-          - "how much longer on [the] air fryer"
-  FryerStatus:
-    data:
-      - sentences:
-          - "air fryer status"
-          - "what is [the] air fryer doing"
 lists:
-  temp:
+  temperature:
     range:
       from: 170
       to: 400
+      step: 10
   minutes:
     range:
       from: 1

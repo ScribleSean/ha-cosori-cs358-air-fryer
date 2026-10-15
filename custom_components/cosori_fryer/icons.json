@@ -1,0 +1,23 @@
+{
+  "entity": {
+    "button": {
+      "preheat": { "default": "mdi:fire" },
+      "air_fry": { "default": "mdi:fan" },
+      "stop": { "default": "mdi:stop" }
+    },
+    "number": {
+      "temperature": { "default": "mdi:thermometer" },
+      "minutes": { "default": "mdi:timer-outline" }
+    },
+    "sensor": {
+      "cook_status": { "default": "mdi:pot-steam-outline" },
+      "set_temperature": { "default": "mdi:thermometer" },
+      "time_remaining": { "default": "mdi:timer-sand" }
+    }
+  },
+  "services": {
+    "preheat": { "service": "mdi:fire" },
+    "air_fry": { "service": "mdi:fan" },
+    "stop": { "service": "mdi:stop" }
+  }
+}

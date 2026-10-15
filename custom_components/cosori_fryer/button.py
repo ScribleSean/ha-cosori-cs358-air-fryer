@@ -1,15 +1,44 @@
-"""Fryer action buttons. Each one goes through the same checks as the services."""
+"""Preheat, Air fry and Stop. Each is unavailable when the fryer can't do it."""
 
 from __future__ import annotations
 
-from homeassistant.components.button import ButtonEntity
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+
+from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
+from .api import FryerStatus
 from .coordinator import FryerConfigEntry, FryerCoordinator
 from .entity import FryerEntity
 
-BUTTONS = ("preheat", "start", "stop")
+PARALLEL_UPDATES = 1
+
+
+@dataclass(frozen=True, kw_only=True)
+class FryerButtonDescription(ButtonEntityDescription):
+    possible: Callable[[FryerStatus], bool]
+    press: Callable[[FryerCoordinator], Awaitable[None]]
+
+
+BUTTONS = (
+    FryerButtonDescription(
+        key="preheat",
+        possible=lambda s: s.can_preheat,
+        press=lambda c: c.preheat(c.temperature),
+    ),
+    FryerButtonDescription(
+        key="air_fry",
+        possible=lambda s: s.can_air_fry,
+        press=lambda c: c.air_fry(c.temperature, c.minutes),
+    ),
+    FryerButtonDescription(
+        key="stop",
+        possible=lambda s: s.can_stop,
+        press=lambda c: c.stop(),
+    ),
+)
 
 
 async def async_setup_entry(
@@ -17,18 +46,27 @@ async def async_setup_entry(
     entry: FryerConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    async_add_entities(FryerButton(entry.runtime_data, name) for name in BUTTONS)
+    async_add_entities(
+        FryerButton(entry.runtime_data, description) for description in BUTTONS
+    )
 
 
 class FryerButton(FryerEntity, ButtonEntity):
-    def __init__(self, coordinator: FryerCoordinator, command: str) -> None:
-        super().__init__(coordinator, command)
-        self._command = command
+    entity_description: FryerButtonDescription
+
+    def __init__(
+        self, coordinator: FryerCoordinator, description: FryerButtonDescription
+    ) -> None:
+        super().__init__(coordinator, description.key)
+        self.entity_description = description
+
+    @property
+    def available(self) -> bool:
+        return (
+            super().available
+            and self.coordinator.data is not None
+            and self.entity_description.possible(self.coordinator.data)
+        )
 
     async def async_press(self) -> None:
-        if self._command == "preheat":
-            await self.coordinator.async_command(
-                "preheat", self.coordinator.target_temp, self.coordinator.cook_minutes
-            )
-        else:
-            await self.coordinator.async_command(self._command)
+        await self.entity_description.press(self.coordinator)

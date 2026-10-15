@@ -1,32 +1,28 @@
-# Spoken replies for the sentences in custom_sentences/en/air_fryer.yaml
+# Spoken replies for the sentences in custom_sentences_en_air_fryer.yaml. Add to configuration.yaml.
 intent_script:
   FryerPreheat:
     action:
-      - action: script.preheat_air_fryer
+      - action: cosori_fryer.preheat
         data:
-          temp: "{{ temp }}"
+          temperature: "{{ temperature }}"
+    speech:
+      text: "Preheating the air fryer to {{ temperature }} degrees."
+  FryerAirFry:
+    action:
+      - action: cosori_fryer.air_fry
+        data:
+          temperature: "{{ temperature }}"
           minutes: "{{ minutes }}"
     speech:
-      text: "Preheating the air fryer to {{ temp }} degrees, with {{ minutes }} minutes queued."
-  FryerStart:
-    action:
-      - action: script.start_air_fryer
-    speech:
-      text: "Starting the air fryer."
+      text: "Air frying at {{ temperature }} degrees for {{ minutes }} minutes."
   FryerStop:
     action:
-      - action: script.stop_air_fryer
+      - action: cosori_fryer.stop
     speech:
       text: "Stopping the air fryer."
   FryerTimeLeft:
     speech:
       text: >-
-        {% set left = states('sensor.air_fryer_time_remaining') | float(0) %}
-        {% if left > 0 %}About {{ left | round(0, 'ceil') | int }} minutes left on the air fryer.
-        {% else %}Nothing is running on the air fryer.{% endif %}
-  FryerStatus:
-    speech:
-      text: >-
-        {% set state = states('sensor.air_fryer_status') %}
-        {% set left = states('sensor.air_fryer_time_remaining') | float(0) | round(0, 'ceil') | int %}
-        The air fryer is {{ state_translated('sensor.air_fryer_status') | lower }}{% if left > 0 %}, with {{ left }} minutes left{% endif %}.
+        {% set left = states('sensor.air_fryer_time_remaining') | int(0) %}
+        {% if left > 0 %}About {{ left }} minutes left, {{ state_translated('sensor.air_fryer_cooking_status') | lower }}.
+        {% else %}The air fryer is {{ state_translated('sensor.air_fryer_cooking_status') | lower }}.{% endif %}

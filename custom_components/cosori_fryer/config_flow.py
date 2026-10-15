@@ -1,81 +1,117 @@
-"""Config flow: sign in to VeSync and find the fryer."""
+"""Sign in to VeSync and find the fryer; sign in again when the password changes."""
 
 from __future__ import annotations
 
+import uuid
+from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
-from pyvesync import VeSync
-from pyvesync.utils.errors import VeSyncError, VeSyncLoginError
-
-from homeassistant.config_entries import (
-    ConfigEntry,
-    ConfigFlow,
-    ConfigFlowResult,
-    OptionsFlow,
-)
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
-from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import CONF_NOTIFY_SERVICE, DOMAIN
-from .cosori358 import Cosori358, FryerError
+from .api import AuthError, FryerClient, FryerError
+from .const import (
+    CONF_ACCOUNT_ID,
+    CONF_COUNTRY_CODE,
+    CONF_REGION,
+    CONF_TERMINAL_ID,
+    CONF_TOKEN,
+    DOMAIN,
+)
 
-_USER_SCHEMA = vol.Schema(
+USER_SCHEMA = vol.Schema(
     {vol.Required(CONF_EMAIL): str, vol.Required(CONF_PASSWORD): str}
 )
+PASSWORD_SCHEMA = vol.Schema({vol.Required(CONF_PASSWORD): str})
 
 
 class FryerConfigFlow(ConfigFlow, domain=DOMAIN):
-    VERSION = 1
+    VERSION = 2
+
+    async def _sign_in(
+        self, email: str, password: str, terminal_id: str
+    ) -> tuple[dict[str, Any] | None, str | None, str | None]:
+        """Return (entry data, fryer name, error key)."""
+        client = FryerClient(
+            async_get_clientsession(self.hass),
+            email,
+            password,
+            terminal_id,
+            time_zone=self.hass.config.time_zone,
+        )
+        try:
+            session = await client.login()
+            device = await client.find_fryer()
+        except AuthError:
+            return None, None, "invalid_auth"
+        except FryerError as err:
+            return (
+                None,
+                None,
+                "no_fryer" if "No CS358" in str(err) else "cannot_connect",
+            )
+        data = {
+            CONF_EMAIL: email,
+            CONF_PASSWORD: password,
+            CONF_TERMINAL_ID: terminal_id,
+            CONF_TOKEN: session.token,
+            CONF_ACCOUNT_ID: session.account_id,
+            CONF_COUNTRY_CODE: session.country_code,
+            CONF_REGION: session.region,
+        }
+        return data, device.name, None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            await self.async_set_unique_id(user_input[CONF_EMAIL].lower())
-            self._abort_if_unique_id_configured()
-            manager = VeSync(
+            data, name, error = await self._sign_in(
                 user_input[CONF_EMAIL],
                 user_input[CONF_PASSWORD],
-                session=async_get_clientsession(self.hass),
+                "2" + uuid.uuid4().hex,
             )
-            try:
-                if not await manager.login():
-                    errors["base"] = "invalid_auth"
-                else:
-                    fryer = await Cosori358.discover(manager)
-                    return self.async_create_entry(title=fryer.name, data=user_input)
-            except VeSyncLoginError:
-                errors["base"] = "invalid_auth"
-            except FryerError as err:
-                errors["base"] = "no_fryer" if "No CS358" in str(err) else "cannot_connect"
-            except VeSyncError:
-                errors["base"] = "cannot_connect"
+            if error:
+                errors["base"] = error
+            else:
+                assert data is not None
+                await self.async_set_unique_id(data[CONF_ACCOUNT_ID])
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(title=name or "Air fryer", data=data)
         return self.async_show_form(
-            step_id="user", data_schema=_USER_SCHEMA, errors=errors
+            step_id="user",
+            data_schema=self.add_suggested_values_to_schema(USER_SCHEMA, user_input),
+            errors=errors,
         )
 
-    @staticmethod
-    @callback
-    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
-        return FryerOptionsFlow()
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        return await self.async_step_reauth_confirm()
 
-
-class FryerOptionsFlow(OptionsFlow):
-    async def async_step_init(
+    async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        entry = self._get_reauth_entry()
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return self.async_create_entry(data=user_input)
-        options = self.config_entry.options
-        schema = vol.Schema(
-            {
-                vol.Optional(
-                    CONF_NOTIFY_SERVICE,
-                    description={"suggested_value": options.get(CONF_NOTIFY_SERVICE, "")},
-                ): str,
-            }
+            data, _, error = await self._sign_in(
+                entry.data[CONF_EMAIL],
+                user_input[CONF_PASSWORD],
+                entry.data[CONF_TERMINAL_ID],
+            )
+            if error:
+                errors["base"] = error
+            else:
+                assert data is not None
+                await self.async_set_unique_id(data[CONF_ACCOUNT_ID])
+                self._abort_if_unique_id_mismatch(reason="wrong_account")
+                return self.async_update_reload_and_abort(entry, data=data)
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=PASSWORD_SCHEMA,
+            description_placeholders={"email": entry.data[CONF_EMAIL]},
+            errors=errors,
         )
-        return self.async_show_form(step_id="init", data_schema=schema)
