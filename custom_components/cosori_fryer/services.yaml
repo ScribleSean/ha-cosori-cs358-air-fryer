@@ -1,5 +1,9 @@
 start_cooking:
   fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: cosori_fryer
     temperature:
       required: true
       default: 360
