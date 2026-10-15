@@ -18,8 +18,8 @@ preheat_air_fryer:
   sequence:
     - action: cosori_fryer.start_cooking
       data:
-        temperature: "{{ temperature | int }}"
-        cooking_time: "{{ cooking_time | int }}"
+        temperature: "{{ temperature }}"
+        cooking_time: "{{ cooking_time }}"
         preheat: true
 
 start_air_fryer:

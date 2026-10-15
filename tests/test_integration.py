@@ -22,7 +22,15 @@ from pytest_homeassistant_custom_component.common import (
     async_fire_time_changed,
 )
 
-from custom_components.cosori_fryer.api import AuthError, Device, FryerError, Session, TokenRejected
+from custom_components.cosori_fryer.api import (
+    AuthError,
+    Device,
+    FryerError,
+    RateLimited,
+    Session,
+    TokenRejected,
+    TooManyFryers,
+)
 from custom_components.cosori_fryer.const import (
     CONF_ACCOUNT_ID,
     CONF_LAST_LOGIN,
@@ -750,3 +758,94 @@ async def test_already_finished_at_startup_is_not_announced(hass: HomeAssistant,
     await setup(hass, fryer, "cookEnd")
     await poll(hass)
     assert done == []
+
+
+# --- third review -----------------------------------------------------------
+
+
+async def test_setup_form_recovers_from_an_expired_session_without_hammering(
+    hass: HomeAssistant, fryer: FakeClient, freezer
+) -> None:
+    credentials = {CONF_EMAIL: "me@example.com", CONF_PASSWORD: "secret"}
+    flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    fryer.find_error = TokenRejected("expired")
+    result = await hass.config_entries.flow.async_configure(flow["flow_id"], credentials)
+    assert result["errors"] == {"base": "cannot_connect"}
+    fryer.find_error = None
+    result = await hass.config_entries.flow.async_configure(flow["flow_id"], credentials)
+    assert result["errors"] == {"base": "rate_limited"}
+    assert fryer.logins == 1
+    freezer.tick(timedelta(seconds=301))
+    result = await hass.config_entries.flow.async_configure(flow["flow_id"], credentials)
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert fryer.logins == 2
+
+
+async def test_setup_form_does_not_retry_a_rate_limited_login(hass: HomeAssistant, fryer: FakeClient) -> None:
+    credentials = {CONF_EMAIL: "me@example.com", CONF_PASSWORD: "secret"}
+    fryer.login_error = RateLimited("slow down")
+    flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    for _ in range(3):
+        result = await hass.config_entries.flow.async_configure(flow["flow_id"], credentials)
+        assert result["errors"] == {"base": "rate_limited"}
+    assert fryer.logins == 1
+
+
+async def test_setup_form_reports_more_than_one_fryer(hass: HomeAssistant, fryer: FakeClient) -> None:
+    fryer.find_error = TooManyFryers("two")
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}, data={CONF_EMAIL: "me@example.com", CONF_PASSWORD: "x"}
+    )
+    assert result["errors"] == {"base": "multiple_fryers"}
+
+
+async def test_duplicate_old_entry_stops_before_signing_in(hass: HomeAssistant, fryer: FakeClient) -> None:
+    first = await setup(hass, fryer)
+    logins = fryer.logins
+    duplicate = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_EMAIL: "ME@example.com", CONF_PASSWORD: "secret"},
+        unique_id="me@example.com",
+        version=1,
+    )
+    duplicate.add_to_hass(hass)
+    await hass.config_entries.async_setup(duplicate.entry_id)
+    await hass.async_block_till_done()
+    assert duplicate.state is ConfigEntryState.SETUP_ERROR
+    assert first.state is ConfigEntryState.LOADED
+    assert fryer.logins == logins
+
+
+async def test_finish_seen_by_a_command_still_fires(hass: HomeAssistant, fryer: FakeClient) -> None:
+    await setup(hass, fryer, "cooking")
+    done = async_capture_events(hass, EVENT_COOK_DONE)
+    fryer.result = raw("cookEnd")  # finished since the last poll
+    await hass.services.async_call(
+        DOMAIN, "start_cooking", {"temperature": 360, "cooking_time": 5}, blocking=True
+    )
+    fryer.result = raw("cooking")
+    await poll(hass, POLL_ACTIVE)
+    assert len(done) == 1
+
+
+async def test_cooking_temperature_converts_on_metric_systems(hass: HomeAssistant, fryer: FakeClient) -> None:
+    from homeassistant.util.unit_system import METRIC_SYSTEM
+
+    hass.config.units = METRIC_SYSTEM
+    fryer.result = raw("standby")
+    entry = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, unique_id="ACCOUNT-1", version=2)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    temperature = hass.states.get("number.air_fryer_cooking_temperature")
+    assert temperature.attributes["unit_of_measurement"] == "°C"
+    await hass.services.async_call(
+        "number",
+        "set_value",
+        {"entity_id": "number.air_fryer_cooking_temperature", "value": 180},
+        blocking=True,
+    )
+    # 180 °C is 356 °F, which snaps to the fryer's 360 °F.
+    await hass.services.async_call("button", "press", {"entity_id": "button.air_fryer_start"}, blocking=True)
+    assert fryer.commands[-1] == ("start", 360, 10, False)

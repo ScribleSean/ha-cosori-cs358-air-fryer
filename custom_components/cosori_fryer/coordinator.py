@@ -50,7 +50,9 @@ class FryerCoordinator(DataUpdateCoordinator[FryerStatus]):
     config_entry: FryerConfigEntry
 
     def __init__(self, hass: HomeAssistant, entry: FryerConfigEntry, client: FryerClient) -> None:
-        super().__init__(hass, _LOGGER, config_entry=entry, name=DOMAIN, update_interval=POLL_IDLE)
+        super().__init__(
+            hass, _LOGGER, config_entry=entry, name=DOMAIN, update_interval=POLL_IDLE, always_update=False
+        )
         self.client = client
         # The values the Preheat and Start buttons use, set by the number entities.
         self.temperature = DEFAULT_TEMPERATURE
@@ -162,6 +164,8 @@ class FryerCoordinator(DataUpdateCoordinator[FryerStatus]):
         async with self._command_lock:
             try:
                 status = await self._signed_in(self.client.status)
+                # A cook that finished since the last poll still gets its event.
+                self._track(status.state)
                 if not allowed(status):
                     raise ServiceValidationError(
                         translation_domain=DOMAIN,

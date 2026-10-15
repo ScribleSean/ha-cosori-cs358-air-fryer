@@ -4,7 +4,7 @@ intents:
   FryerPreheat:
     data:
       - sentences:
-          - "preheat [the] air fryer [to] {temperature} [degrees] for {cooking_time} minute[s]"
+          - "preheat [the] air fryer [to] {temperature} [degrees] for [a] {cooking_time} minute cook"
   FryerStart:
     data:
       - sentences:

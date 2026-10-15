@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from custom_components.cosori_fryer.api import (
@@ -49,7 +48,6 @@ class FakeClient:
         self.login_error: Exception | None = None
         self.find_error: Exception | None = None
         self.no_fryer = False
-        self.pause_status: asyncio.Event | None = None
 
     terminal_id = "2abc"
 
@@ -76,8 +74,6 @@ class FakeClient:
 
     async def status(self) -> FryerStatus:
         await self._guard()
-        if self.pause_status is not None:
-            await self.pause_status.wait()
         return FryerStatus.parse(self.result)
 
     async def start(self, temperature: int, minutes: int, *, preheat: bool) -> None:

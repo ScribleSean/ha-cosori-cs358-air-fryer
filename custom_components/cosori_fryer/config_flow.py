@@ -13,7 +13,7 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import AuthError, FryerClient, FryerError, NoFryer
+from .api import AuthError, FryerClient, FryerError, NoFryer, RateLimited, TokenRejected, TooManyFryers
 from .const import (
     CONF_ACCOUNT_ID,
     CONF_COUNTRY_CODE,
@@ -22,6 +22,7 @@ from .const import (
     CONF_TERMINAL_ID,
     CONF_TOKEN,
     DOMAIN,
+    RELOGIN_COOLDOWN_SECONDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -55,14 +56,23 @@ class FryerConfigFlow(ConfigFlow, domain=DOMAIN):
         client = self._client
         try:
             if client.session is None:
+                if self._login_time is not None and time.time() - self._login_time < RELOGIN_COOLDOWN_SECONDS:
+                    return None, None, "rate_limited"  # Repeated submits must not hammer VeSync.
                 self._login_time = time.time()
                 await client.login()
             device = await client.find_fryer()
         except AuthError:
             self._client = None
             return None, None, "invalid_auth"
+        except RateLimited:
+            return None, None, "rate_limited"
+        except TokenRejected:
+            client.session = None  # Sign in again next time, once the cooldown allows.
+            return None, None, "cannot_connect"
         except NoFryer:
             return None, None, "no_fryer"
+        except TooManyFryers:
+            return None, None, "multiple_fryers"
         except FryerError:
             return None, None, "cannot_connect"
         except Exception:

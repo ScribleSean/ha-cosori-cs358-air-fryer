@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, Platform
 from homeassistant.core import HomeAssistant, ServiceCall, callback
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import ConfigEntryError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -117,15 +118,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: FryerConfigEntry) -> boo
         stored_session(entry),
         hass.config.time_zone,
     )
+    if _duplicate(
+        hass, entry, lambda other: other.data[CONF_EMAIL].lower() == entry.data[CONF_EMAIL].lower()
+    ):
+        # Possible with setups from before 0.3.0. Stopping here avoids a login that
+        # would sign the other entry out.
+        raise ConfigEntryError(translation_domain=DOMAIN, translation_key="duplicate_account")
     coordinator = FryerCoordinator(hass, entry, client)
     # Finds the fryer, then reads it. The stored session is reused; a new
     # login only happens if VeSync rejects it.
     await coordinator.async_config_entry_first_refresh()
+    account_id = client.session.account_id if client.session else None
+    if _duplicate(hass, entry, lambda other: other.unique_id == account_id):
+        raise ConfigEntryError(translation_domain=DOMAIN, translation_key="duplicate_account")
     if client.device is not None:  # Always set once the first refresh succeeded.
         await _migrate_unique_ids(hass, entry, client.device.cid)
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
+
+
+def _duplicate(
+    hass: HomeAssistant, entry: FryerConfigEntry, same: Callable[[FryerConfigEntry], bool]
+) -> bool:
+    """Another entry for the same account that's already loaded."""
+    return any(
+        other.entry_id != entry.entry_id and other.state is ConfigEntryState.LOADED and same(other)
+        for other in hass.config_entries.async_entries(DOMAIN)
+    )
 
 
 # Entity keys used by earlier releases, by platform, and what they are now.

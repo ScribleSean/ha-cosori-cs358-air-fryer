@@ -5,7 +5,7 @@ These are settings kept in Home Assistant; changing them sends nothing to the fr
 
 from __future__ import annotations
 
-from homeassistant.components.number import NumberEntityDescription, RestoreNumber
+from homeassistant.components.number import NumberDeviceClass, NumberEntityDescription, RestoreNumber
 from homeassistant.const import UnitOfTemperature, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -22,6 +22,7 @@ _FIELD = {"cook_temperature": "temperature", "cook_time": "minutes"}
 NUMBERS = (
     NumberEntityDescription(
         key="cook_temperature",
+        device_class=NumberDeviceClass.TEMPERATURE,
         native_min_value=TEMP_MIN,
         native_max_value=TEMP_MAX,
         native_step=TEMP_STEP,
