@@ -33,7 +33,8 @@
     "abort": {
       "already_configured": "This VeSync account is already set up.",
       "reauth_successful": "Signed in again.",
-      "wrong_account": "That password belongs to a different VeSync account."
+      "wrong_account": "That password belongs to a different VeSync account.",
+      "already_in_progress": "This VeSync account is already being set up."
     }
   },
   "entity": {

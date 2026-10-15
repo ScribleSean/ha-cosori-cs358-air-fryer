@@ -22,7 +22,7 @@ from pytest_homeassistant_custom_component.common import (
     async_fire_time_changed,
 )
 
-from custom_components.cosori_fryer.api import AuthError, Device, FryerError, Session
+from custom_components.cosori_fryer.api import AuthError, Device, FryerError, Session, TokenRejected
 from custom_components.cosori_fryer.const import (
     CONF_ACCOUNT_ID,
     CONF_LAST_LOGIN,
@@ -50,7 +50,8 @@ def fryer_fixture() -> Generator[FakeClient]:
     fake = FakeClient()
 
     def make(*args, **kwargs) -> FakeClient:
-        fake.session = args[4] if len(args) > 4 else kwargs.get("session", fake.session)
+        # Like the real client: a new client only has a session if one is passed in.
+        fake.session = args[4] if len(args) > 4 else kwargs.get("session")
         return fake
 
     with (
@@ -566,14 +567,30 @@ async def test_events_carry_the_device(hass: HomeAssistant, fryer: FakeClient) -
 
 
 async def test_overlapping_requests_share_one_login(hass: HomeAssistant, fryer: FakeClient) -> None:
+    """Both requests are rejected before either signs in; only one may log in."""
     import asyncio
 
     entry = await setup(hass, fryer)
-    fryer.reject_token = True
     coordinator = entry.runtime_data
-    results = await asyncio.gather(
-        coordinator._signed_in(fryer.status), coordinator._signed_in(fryer.status), return_exceptions=True
-    )
+    fryer.reject_token = True
+    gate = asyncio.Event()
+    rejected = 0
+
+    async def slow_rejected_status():
+        nonlocal rejected
+        if fryer.session and fryer.session.token == "token-0":
+            rejected += 1
+            await gate.wait()
+            raise TokenRejected("rejected")
+        return await fryer.status()
+
+    first = asyncio.ensure_future(coordinator._signed_in(slow_rejected_status))
+    second = asyncio.ensure_future(coordinator._signed_in(slow_rejected_status))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert rejected == 2  # both are in flight with the old token
+    gate.set()
+    results = await asyncio.gather(first, second, return_exceptions=True)
     assert fryer.logins == 1
     assert not any(isinstance(r, Exception) for r in results)
 
@@ -630,3 +647,106 @@ async def test_two_old_entries_for_one_account_do_not_share_a_unique_id(
     await hass.config_entries.async_setup(second.entry_id)
     await hass.async_block_till_done()
     assert second.unique_id == "me@example.com"
+
+
+# --- second review ----------------------------------------------------------
+
+
+async def test_old_entry_with_changed_password_can_sign_in_again(
+    hass: HomeAssistant, fryer: FakeClient
+) -> None:
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    fryer.reject_token = True
+    fryer.login_error = AuthError("password changed")
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_EMAIL: "Me@Example.com", CONF_PASSWORD: "old"},
+        unique_id="me@example.com",
+        version=1,
+    )
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.unique_id == "me@example.com"  # setup never got far enough to learn the account id
+
+    fryer.login_error = None
+    flow = hass.config_entries.flow.async_progress()[0]
+    result = await hass.config_entries.flow.async_configure(flow["flow_id"], {CONF_PASSWORD: "new"})
+    await hass.async_block_till_done()
+    assert result["reason"] == "reauth_successful"
+    assert entry.unique_id == "ACCOUNT-1"
+
+
+async def test_retrying_after_no_fryer_does_not_sign_in_again(hass: HomeAssistant, fryer: FakeClient) -> None:
+    fryer.no_fryer = True
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    credentials = {CONF_EMAIL: "me@example.com", CONF_PASSWORD: "secret"}
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], credentials)
+    assert result["errors"] == {"base": "no_fryer"}
+    fryer.no_fryer = False
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], credentials)
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert fryer.logins == 1
+
+
+async def test_new_entry_starts_the_login_cooldown(hass: HomeAssistant, fryer: FakeClient) -> None:
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}, data={CONF_EMAIL: "me@example.com", CONF_PASSWORD: "secret"}
+    )
+    await hass.async_block_till_done()
+    assert result["data"][CONF_LAST_LOGIN] is not None
+    fryer.reject_token = True
+    await poll(hass)
+    assert fryer.logins == 1  # no second login straight after setting up
+
+
+async def test_two_forms_for_one_account_cannot_both_sign_in(hass: HomeAssistant, fryer: FakeClient) -> None:
+    fryer.no_fryer = True
+    credentials = {CONF_EMAIL: "me@example.com", CONF_PASSWORD: "secret"}
+    first = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    second = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    await hass.config_entries.flow.async_configure(first["flow_id"], credentials)
+    result = await hass.config_entries.flow.async_configure(second["flow_id"], credentials)
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "already_in_progress"
+    assert fryer.logins == 1
+
+
+@pytest.mark.parametrize(
+    "data", [{"temperature": 360.5, "cooking_time": 8}, {"temperature": 360, "cooking_time": 1.9}]
+)
+async def test_fractional_values_are_refused_not_cut_down(
+    hass: HomeAssistant, fryer: FakeClient, data: dict
+) -> None:
+    await setup(hass, fryer)
+    with pytest.raises(vol.Invalid):
+        await hass.services.async_call(DOMAIN, "start_cooking", data, blocking=True)
+    assert fryer.commands == []
+
+
+async def test_temperature_setting_snaps_to_tens(hass: HomeAssistant, fryer: FakeClient) -> None:
+    await setup(hass, fryer)
+    await hass.services.async_call(
+        "number",
+        "set_value",
+        {"entity_id": "number.air_fryer_cooking_temperature", "value": 375},
+        blocking=True,
+    )
+    assert state(hass, "number.air_fryer_cooking_temperature") == "380"
+
+
+async def test_finish_after_a_pulled_drawer_still_fires(hass: HomeAssistant, fryer: FakeClient) -> None:
+    await setup(hass, fryer, "cooking")
+    done = async_capture_events(hass, EVENT_COOK_DONE)
+    fryer.result = raw("pullOut")
+    await poll(hass, POLL_ACTIVE)
+    fryer.result = raw("cookEnd")
+    await poll(hass, POLL_ACTIVE * 2)
+    assert len(done) == 1
+
+
+async def test_already_finished_at_startup_is_not_announced(hass: HomeAssistant, fryer: FakeClient) -> None:
+    done = async_capture_events(hass, EVENT_COOK_DONE)
+    await setup(hass, fryer, "cookEnd")
+    await poll(hass)
+    assert done == []

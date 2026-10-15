@@ -50,7 +50,7 @@ With [HACS](https://hacs.xyz): add this repository as a custom repository of typ
 
 By hand: copy `custom_components/cosori_fryer` into the `custom_components` folder of your Home Assistant config and restart.
 
-Needs Home Assistant 2025.2 or later. One fryer per VeSync account.
+Needs Home Assistant 2025.3 or later. One fryer per VeSync account.
 
 Then go to Settings, Devices & services, Add integration, "COSORI Air Fryer (CS358)", and sign in. If VeSync later rejects the password, Home Assistant asks you to sign in again.
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from collections.abc import Mapping
 from typing import Any
@@ -16,6 +17,7 @@ from .api import AuthError, FryerClient, FryerError, NoFryer
 from .const import (
     CONF_ACCOUNT_ID,
     CONF_COUNTRY_CODE,
+    CONF_LAST_LOGIN,
     CONF_REGION,
     CONF_TERMINAL_ID,
     CONF_TOKEN,
@@ -31,21 +33,33 @@ PASSWORD_SCHEMA = vol.Schema({vol.Required(CONF_PASSWORD): str})
 class FryerConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 2
 
+    def __init__(self) -> None:
+        # Kept between attempts, so retrying after "no fryer" doesn't sign in again.
+        self._client: FryerClient | None = None
+        self._credentials: tuple[str, str] | None = None
+        self._login_time: float | None = None
+
     async def _sign_in(
         self, email: str, password: str, terminal_id: str
     ) -> tuple[dict[str, Any] | None, str | None, str | None]:
         """Return (entry data, fryer name, error key)."""
-        client = FryerClient(
-            async_get_clientsession(self.hass),
-            email,
-            password,
-            terminal_id,
-            time_zone=self.hass.config.time_zone,
-        )
+        if self._client is None or self._credentials != (email, password) or self._client.session is None:
+            self._client = FryerClient(
+                async_get_clientsession(self.hass),
+                email,
+                password,
+                terminal_id,
+                time_zone=self.hass.config.time_zone,
+            )
+            self._credentials = (email, password)
+        client = self._client
         try:
-            session = await client.login()
+            if client.session is None:
+                self._login_time = time.time()
+                await client.login()
             device = await client.find_fryer()
         except AuthError:
+            self._client = None
             return None, None, "invalid_auth"
         except NoFryer:
             return None, None, "no_fryer"
@@ -54,14 +68,19 @@ class FryerConfigFlow(ConfigFlow, domain=DOMAIN):
         except Exception:
             _LOGGER.exception("Unexpected error signing in to VeSync")
             return None, None, "unknown"
+        session = client.session
+        if session is None:
+            return None, None, "unknown"
         data = {
             CONF_EMAIL: email,
             CONF_PASSWORD: password,
-            CONF_TERMINAL_ID: terminal_id,
+            CONF_TERMINAL_ID: client.terminal_id,
             CONF_TOKEN: session.token,
             CONF_ACCOUNT_ID: session.account_id,
             CONF_COUNTRY_CODE: session.country_code,
             CONF_REGION: session.region,
+            # Starts the re-login cooldown from this sign-in.
+            CONF_LAST_LOGIN: self._login_time,
         }
         return data, device.name, None
 
@@ -74,11 +93,15 @@ class FryerConfigFlow(ConfigFlow, domain=DOMAIN):
                 entry.data[CONF_EMAIL].lower() == email.lower() for entry in self._async_current_entries()
             ):
                 return self.async_abort(reason="already_configured")
-            data, name, error = await self._sign_in(email, user_input[CONF_PASSWORD], "2" + uuid.uuid4().hex)
+            # Holds the account for this form, so a second form for it is refused rather
+            # than signing in alongside and knocking this one out.
+            await self.async_set_unique_id(f"email:{email.lower()}")
+            terminal_id = self._client.terminal_id if self._client else "2" + uuid.uuid4().hex
+            data, name, error = await self._sign_in(email, user_input[CONF_PASSWORD], terminal_id)
             if data is None:
                 errors["base"] = error or "unknown"
             else:
-                await self.async_set_unique_id(data[CONF_ACCOUNT_ID])
+                await self.async_set_unique_id(data[CONF_ACCOUNT_ID], raise_on_progress=False)
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(title=name or "Air fryer", data=data)
         return self.async_show_form(
@@ -100,7 +123,13 @@ class FryerConfigFlow(ConfigFlow, domain=DOMAIN):
             if data is None:
                 errors["base"] = error or "unknown"
             else:
-                await self.async_set_unique_id(data[CONF_ACCOUNT_ID])
+                account_id = data[CONF_ACCOUNT_ID]
+                if entry.unique_id and entry.unique_id.lower() == entry.data[CONF_EMAIL].lower():
+                    # Set up before 0.3.0, when the email was the unique id.
+                    if self.hass.config_entries.async_entry_for_domain_unique_id(DOMAIN, account_id):
+                        return self.async_abort(reason="already_configured")
+                    self.hass.config_entries.async_update_entry(entry, unique_id=account_id)
+                await self.async_set_unique_id(account_id)
                 self._abort_if_unique_id_mismatch(reason="wrong_account")
                 return self.async_update_reload_and_abort(entry, data=data)
         return self.async_show_form(

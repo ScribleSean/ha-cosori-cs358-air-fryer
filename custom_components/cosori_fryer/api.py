@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from aiohttp import ClientError, ClientSession
+from aiohttp import ClientError, ClientSession, ClientTimeout
 
 DEVICE_TYPE = "CS358-AF"
 TEMP_MIN, TEMP_MAX, TEMP_STEP = 170, 400, 10
@@ -24,6 +24,9 @@ TOKEN_EXPIRED = -11001000
 CREDENTIAL_ERRORS = {-11201000, -11202000}  # wrong password, unknown account
 RATE_LIMITED = {-16906000, -11003000}
 CROSS_REGION = -11260022
+
+# A hung request must not hold up Stop; VeSync normally answers within a second or two.
+REQUEST_TIMEOUT = ClientTimeout(total=15)
 
 _HEADERS = {
     "Content-Type": "application/json; charset=UTF-8",
@@ -105,27 +108,36 @@ class FryerStatus:
 
     @classmethod
     def parse(cls, result: dict[str, Any]) -> FryerStatus:
-        state = str(result.get("cookStatus") or "unknown")
-        steps = result.get("stepArray") or []
-        index = result.get("stepIndex") or 0
-        step = steps[index] if 0 <= index < len(steps) else {}
-        preheating = state in ("heating", "preheatStop", "preheatEnd")
-        # The fryer's total counts a preheat plus the cook queued behind it;
-        # report the time left in the phase that is running.
-        if state in ("heating", "preheatStop"):
-            seconds = int(result.get("preheatLastTime") or 0)
-        elif state == "preheatEnd":
-            seconds = 0
-        else:
-            seconds = int(result.get("totalTimeRemaining") or 0)
-        return cls(
-            state=state,
-            cook_set_temp=step.get("cookTemp"),
-            cook_set_time=step.get("cookSetTime"),
-            preheat_set_time=(result.get("preheatSetTime") or None) if preheating else None,
-            seconds_left=seconds,
-            raw=result,
-        )
+        """Build a status from getAirfryerStatus; raise FryerError if the reply is malformed."""
+        try:
+            state = str(result.get("cookStatus") or "unknown")
+            steps = result.get("stepArray") or []
+            index = int(result.get("stepIndex") or 0)
+            step = steps[index] if isinstance(steps, list) and 0 <= index < len(steps) else {}
+            if not isinstance(step, dict):
+                step = {}
+            preheating = state in ("heating", "preheatStop", "preheatEnd")
+            # The fryer's total counts a preheat plus the cook queued behind it;
+            # report the time left in the phase that is running.
+            if state in ("heating", "preheatStop"):
+                seconds = int(result.get("preheatLastTime") or 0)
+            elif state == "preheatEnd":
+                seconds = 0
+            else:
+                seconds = int(result.get("totalTimeRemaining") or 0)
+            preheat_set = int(result.get("preheatSetTime") or 0) if preheating else 0
+            cook_temp = step.get("cookTemp")
+            cook_time = step.get("cookSetTime")
+            return cls(
+                state=state,
+                cook_set_temp=int(cook_temp) if cook_temp is not None else None,
+                cook_set_time=int(cook_time) if cook_time is not None else None,
+                preheat_set_time=preheat_set or None,
+                seconds_left=max(seconds, 0),
+                raw=result,
+            )
+        except (AttributeError, TypeError, ValueError) as err:
+            raise FryerError(f"VeSync sent a malformed status: {err}") from err
 
 
 def check_settings(temperature: int, minutes: int) -> None:
@@ -156,6 +168,10 @@ class FryerClient:
         self.session = session
         self.device: Device | None = None
 
+    @property
+    def terminal_id(self) -> str:
+        return self._terminal_id
+
     def _base(self, region: str | None) -> str:
         region = region or (self.session.region if self.session else "US")
         return "https://smartapi.vesync.eu" if region == "EU" else "https://smartapi.vesync.com"
@@ -171,7 +187,9 @@ class FryerClient:
 
     async def _post(self, path: str, body: dict[str, Any], region: str | None = None) -> dict[str, Any]:
         try:
-            async with self._http.post(self._base(region) + path, json=body, headers=_HEADERS) as resp:
+            async with self._http.post(
+                self._base(region) + path, json=body, headers=_HEADERS, timeout=REQUEST_TIMEOUT
+            ) as resp:
                 if resp.status != 200:
                     raise FryerError(f"VeSync answered HTTP {resp.status}")
                 data = await resp.json(content_type=None)
@@ -212,7 +230,8 @@ class FryerClient:
             "sourceAppID": APP_ID,
         }
         first = await self._post("/globalPlatform/api/accountAuth/v1/authByPWDOrOTM", auth)
-        code = (first.get("result") or {}).get("authorizeCode")
+        first_result = first.get("result")
+        code = first_result.get("authorizeCode") if isinstance(first_result, dict) else None
         if first.get("code") != 0 or not code:
             raise self._login_failed(first)
 
@@ -224,7 +243,7 @@ class FryerClient:
             "emailSubscriptions": False,
         }
         answer = await self._post(path, exchange)
-        result = answer.get("result") or {}
+        result = answer.get("result") if isinstance(answer.get("result"), dict) else {}
         region = None
         if answer.get("code") == CROSS_REGION and result.get("bizToken"):
             # The account lives in another region: retry once there with the token VeSync returns.
@@ -235,7 +254,7 @@ class FryerClient:
                 "userCountryCode": result.get("countryCode") or "US",
             }
             answer = await self._post(path, exchange, region)
-            result = answer.get("result") or {}
+            result = answer.get("result") if isinstance(answer.get("result"), dict) else {}
         if answer.get("code") != 0:
             raise self._login_failed(answer)
         if not result.get("token") or not result.get("accountID"):
@@ -280,8 +299,15 @@ class FryerClient:
             }
 
         answer = await self._authorised("/cloud/v1/deviceManaged/devices", body)
-        for item in (answer.get("result") or {}).get("list") or []:
-            if item.get("deviceType") == DEVICE_TYPE and item.get("cid") and item.get("configModule"):
+        result = answer.get("result")
+        items = result.get("list") if isinstance(result, dict) else None
+        for item in items if isinstance(items, list) else []:
+            if (
+                isinstance(item, dict)
+                and item.get("deviceType") == DEVICE_TYPE
+                and item.get("cid")
+                and item.get("configModule")
+            ):
                 self.device = Device(
                     cid=item["cid"],
                     name=item.get("deviceName") or "Air fryer",
@@ -313,10 +339,15 @@ class FryerClient:
             }
 
         answer = await self._authorised("/cloud/v2/deviceManaged/bypassV2", body)
-        outer = answer.get("result") or {}
+        outer = answer.get("result")
+        if not isinstance(outer, dict):
+            raise FryerError(f"VeSync sent a malformed reply to '{method}'")
         if outer.get("code") != 0:
             raise FryerError(f"The fryer refused '{method}' (code {outer.get('code')})")
-        return outer.get("result") or {}
+        result = outer.get("result") or {}
+        if not isinstance(result, dict):
+            raise FryerError(f"VeSync sent a malformed reply to '{method}'")
+        return result
 
     async def status(self) -> FryerStatus:
         return FryerStatus.parse(await self._call("getAirfryerStatus"))
