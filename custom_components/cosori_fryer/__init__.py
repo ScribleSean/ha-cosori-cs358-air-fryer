@@ -48,18 +48,25 @@ TEMPERATURE = vol.All(vol.Coerce(int), vol.Range(min=TEMP_MIN, max=TEMP_MAX), _i
 MINUTES = vol.All(vol.Coerce(int), vol.Range(min=MINUTES_MIN, max=MINUTES_MAX))
 
 
-def _coordinator(hass: HomeAssistant) -> FryerCoordinator:
-    for entry in hass.config_entries.async_entries(DOMAIN):
-        if entry.state is ConfigEntryState.LOADED:
-            return entry.runtime_data
-    raise ServiceValidationError(translation_domain=DOMAIN, translation_key="not_loaded")
+def _coordinator(hass: HomeAssistant, entry_id: str | None = None) -> FryerCoordinator:
+    entries = hass.config_entries.async_entries(DOMAIN)
+    if entry_id is None:
+        # Include unloaded entries: a disconnected fryer must not silently redirect a cook.
+        if len(entries) > 1:
+            raise ServiceValidationError(translation_domain=DOMAIN, translation_key="choose_account")
+        entry = entries[0] if entries else None
+    else:
+        entry = next((entry for entry in entries if entry.entry_id == entry_id), None)
+    if entry is None or entry.state is not ConfigEntryState.LOADED:
+        raise ServiceValidationError(translation_domain=DOMAIN, translation_key="not_loaded")
+    return entry.runtime_data
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Register the fryer's action."""
 
     async def start_cooking(call: ServiceCall) -> None:
-        await _coordinator(hass).start_cooking(
+        await _coordinator(hass, call.data.get("config_entry_id")).start_cooking(
             call.data["temperature"],
             call.data["cooking_time"],
             preheat=call.data["preheat"],
@@ -74,6 +81,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 vol.Required("temperature"): TEMPERATURE,
                 vol.Required("cooking_time"): MINUTES,
                 vol.Optional("preheat", default=False): cv.boolean,
+                vol.Optional("config_entry_id"): cv.string,
             }
         ),
     )
