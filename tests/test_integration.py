@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import voluptuous as vol
@@ -22,7 +22,7 @@ from pytest_homeassistant_custom_component.common import (
     async_fire_time_changed,
 )
 
-from custom_components.cosori_fryer.api import AuthError, FryerError
+from custom_components.cosori_fryer.api import AuthError, Device, FryerError, Session
 from custom_components.cosori_fryer.const import (
     CONF_ACCOUNT_ID,
     CONF_TERMINAL_ID,
@@ -281,6 +281,81 @@ async def test_start_cooking_action(hass: HomeAssistant, fryer: FakeClient) -> N
         blocking=True,
     )
     assert fryer.commands == [("start", 400, 8, False), ("start", 360, 12, True)]
+
+
+async def setup_other_account(hass: HomeAssistant, *, loaded: bool) -> tuple[MockConfigEntry, FakeClient]:
+    other = FakeClient()
+    other.session = Session("other-token", "ACCOUNT-2")
+    other.device = Device(cid="CID-2", name="Other Fryer", config_module="CM", region="US")
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**ENTRY_DATA, CONF_EMAIL: "other@example.com", CONF_ACCOUNT_ID: "ACCOUNT-2"},
+        unique_id="ACCOUNT-2",
+        version=2,
+    )
+    entry.add_to_hass(hass)
+    if loaded:
+        with (
+            patch("custom_components.cosori_fryer.FryerClient", return_value=other),
+            patch.object(other, "find_fryer", new=AsyncMock(return_value=other.device)),
+        ):
+            assert await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+    return entry, other
+
+
+@pytest.mark.parametrize("loaded", [False, True])
+async def test_untargeted_cook_refuses_multiple_accounts(
+    hass: HomeAssistant, fryer: FakeClient, loaded: bool
+) -> None:
+    await setup(hass, fryer)
+    _, other = await setup_other_account(hass, loaded=loaded)
+    with pytest.raises(ServiceValidationError) as caught:
+        await hass.services.async_call(
+            DOMAIN, "start_cooking", {"temperature": 360, "cooking_time": 10}, blocking=True
+        )
+    assert caught.value.translation_key == "choose_account"
+    assert fryer.commands == other.commands == []
+
+
+@pytest.mark.parametrize("target_second", [False, True])
+async def test_cook_only_uses_the_selected_account(
+    hass: HomeAssistant, fryer: FakeClient, target_second: bool
+) -> None:
+    first = await setup(hass, fryer)
+    second, other = await setup_other_account(hass, loaded=True)
+    await hass.services.async_call(
+        DOMAIN,
+        "start_cooking",
+        {
+            "temperature": 380,
+            "cooking_time": 12,
+            "config_entry_id": second.entry_id if target_second else first.entry_id,
+        },
+        blocking=True,
+    )
+    selected, untouched = (other, fryer) if target_second else (fryer, other)
+    assert selected.commands == [("start", 380, 12, False)]
+    assert untouched.commands == []
+
+
+@pytest.mark.parametrize("target", ["unknown", "unloaded", "other_integration"])
+async def test_invalid_cooking_target_never_falls_back(
+    hass: HomeAssistant, fryer: FakeClient, target: str
+) -> None:
+    await setup(hass, fryer)
+    entry = MockConfigEntry(domain=DOMAIN if target == "unloaded" else "other", data={})
+    if target != "unknown":
+        entry.add_to_hass(hass)
+    with pytest.raises(ServiceValidationError) as caught:
+        await hass.services.async_call(
+            DOMAIN,
+            "start_cooking",
+            {"temperature": 360, "cooking_time": 10, "config_entry_id": entry.entry_id},
+            blocking=True,
+        )
+    assert caught.value.translation_key == "not_loaded"
+    assert fryer.commands == []
 
 
 @pytest.mark.parametrize(

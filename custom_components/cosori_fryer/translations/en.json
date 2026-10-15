@@ -104,6 +104,9 @@
     },
     "command_failed": {
       "message": "The air fryer didn't respond: {error}"
+    },
+    "choose_account": {
+      "message": "More than one VeSync account is configured. Select the account with config_entry_id."
     }
   },
   "services": {
@@ -122,6 +125,10 @@
         "preheat": {
           "name": "Preheat",
           "description": "Preheat first. Press Start when preheating has finished to begin cooking."
+        },
+        "config_entry_id": {
+          "name": "VeSync account",
+          "description": "The account containing the fryer. Required when more than one account is configured."
         }
       }
     }

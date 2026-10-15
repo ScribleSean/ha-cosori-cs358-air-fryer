@@ -32,6 +32,8 @@ Tested on a physical US unit. Not supported: pause and resume from the cloud (th
 
 `cosori_fryer.start_cooking` starts a manual program with `temperature` (multiples of 10), `cooking_time` in minutes, and optionally `preheat: true`. It works when the fryer is in standby or has finished cooking; otherwise it's refused with the reason.
 
+If more than one VeSync account is configured, select the account using `config_entry_id`. Without it, the action is refused rather than choosing a fryer. The field is optional when only one account is configured.
+
 ## Events
 
 `cosori_fryer_preheat_done` fires when preheating finishes, and `cosori_fryer_cook_done` when a cook runs to the end. Stopping a cook early fires nothing. Both carry the `device_id`. `examples/automations.yaml` turns them into phone notifications.
