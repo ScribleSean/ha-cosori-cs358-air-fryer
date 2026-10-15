@@ -61,7 +61,8 @@ class FakeHttp:
         self.hosts: list[str] = []
         self.response_type = FakeResponse
 
-    def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> FakeResponse:
+    def post(self, url: str, json: dict[str, Any], headers: dict[str, str], **kwargs: Any) -> FakeResponse:
+        self.kwargs = kwargs
         host, path = url.removeprefix("https://").split("/", 1)
         path = "/" + path
         self.hosts.append(host)
@@ -156,16 +157,12 @@ async def test_wrong_password_is_an_auth_error() -> None:
         await fryer.login()
 
 
-async def test_rate_limited_login_is_not_an_auth_error() -> None:
+@pytest.mark.parametrize("code", [-16906000, -11003000])
+async def test_rate_limited_login_is_reported_as_rate_limiting(code: int) -> None:
     fryer, _ = client(
-        {
-            "/globalPlatform/api/accountAuth/v1/authByPWDOrOTM": {
-                "code": -1,
-                "msg": "device or ip request is too frequent",
-            }
-        }
+        {"/globalPlatform/api/accountAuth/v1/authByPWDOrOTM": {"code": code, "msg": "slow down"}}
     )
-    with pytest.raises(api.FryerError) as caught:
+    with pytest.raises(api.FryerError, match="rate limiting") as caught:
         await fryer.login()
     assert not isinstance(caught.value, AuthError)
 
@@ -317,5 +314,42 @@ async def test_malformed_device_list_is_no_fryer() -> None:
     fryer, _ = client(
         {"/cloud/v1/deviceManaged/devices": {"code": 0, "result": {"list": [{"deviceType": "CS358-AF"}]}}}
     )
+    with pytest.raises(api.NoFryer):
+        await fryer.find_fryer()
+
+
+async def test_requests_have_a_short_timeout() -> None:
+    fryer, http = client({"/cloud/v1/deviceManaged/devices": DEVICES})
+    await fryer.find_fryer()
+    assert http.kwargs["timeout"].total == 15
+
+
+async def test_timeout_is_a_fryer_error() -> None:
+    class Hung(FakeHttp):
+        def post(self, *args: Any, **kwargs: Any) -> FakeResponse:
+            raise TimeoutError
+
+    fryer = FryerClient(Hung({}), "me@example.com", "secret", "2abc", SIGNED_IN)  # type: ignore[arg-type]
+    with pytest.raises(api.FryerError):
+        await fryer.status()
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        {"code": 0, "result": "nonsense"},
+        {"code": 0, "result": {"code": 0, "result": ["not", "a", "dict"]}},
+        {"code": 0, "result": {"code": 0, "result": {"cookStatus": "cooking", "stepIndex": "x"}}},
+        {"code": 0, "result": {"code": 0, "result": {"cookStatus": "heating", "preheatLastTime": "soon"}}},
+    ],
+)
+async def test_malformed_status_is_a_fryer_error(reply: dict[str, Any]) -> None:
+    fryer, _ = client({"/cloud/v1/deviceManaged/devices": DEVICES, "/cloud/v2/deviceManaged/bypassV2": reply})
+    with pytest.raises(api.FryerError):
+        await fryer.status()
+
+
+async def test_device_list_with_junk_items_is_no_fryer() -> None:
+    fryer, _ = client({"/cloud/v1/deviceManaged/devices": {"code": 0, "result": {"list": ["junk", None]}}})
     with pytest.raises(api.NoFryer):
         await fryer.find_fryer()

@@ -56,6 +56,7 @@ class FryerCoordinator(DataUpdateCoordinator[FryerStatus]):
         self.temperature = DEFAULT_TEMPERATURE
         self.minutes = DEFAULT_MINUTES
         self._busy_until = 0.0
+        self._cycle: str | None = None  # "preheat" or "cook" while one is in progress
         self._login_lock = asyncio.Lock()
         self._command_lock = asyncio.Lock()
 
@@ -117,24 +118,33 @@ class FryerCoordinator(DataUpdateCoordinator[FryerStatus]):
         except FryerError as err:
             raise UpdateFailed(str(err)) from err
 
-        if self.data is not None:
-            self._announce(self.data.state, status.state)
+        self._track(status.state)
         if status.state in _BUSY:
             self._busy_until = time.monotonic() + ACTIVE_LINGER_SECONDS
         self.update_interval = POLL_ACTIVE if time.monotonic() < self._busy_until else POLL_IDLE
         return status
 
-    def _announce(self, before: str, after: str) -> None:
-        """Fire an event when preheating finishes and when cooking finishes on its own.
+    def _track(self, state: str) -> None:
+        """Fire an event when a preheat or a cook runs to the end.
 
-        A stopped cook goes to standby, a finished one to cookEnd, so Stop fires nothing.
+        The cycle is remembered through pauses and a pulled drawer, so a finish seen
+        after an interruption still counts. A stopped program goes to standby and
+        fires nothing, and a program already finished at startup isn't announced.
         """
-        if before == "heating" and after == "preheatEnd":
-            event = EVENT_PREHEAT_DONE
-        elif before == "cooking" and after == "cookEnd":
-            event = EVENT_COOK_DONE
-        else:
-            return
+        if state in ("heating", "preheatStop"):
+            self._cycle = "preheat"
+        elif state in ("cooking", "cookStop"):
+            self._cycle = "cook"
+        elif state == "preheatEnd" and self._cycle == "preheat":
+            self._cycle = None
+            self._fire(EVENT_PREHEAT_DONE)
+        elif state == "cookEnd" and self._cycle == "cook":
+            self._cycle = None
+            self._fire(EVENT_COOK_DONE)
+        elif state == "standby":
+            self._cycle = None
+
+    def _fire(self, event: str) -> None:
         data = {"entry_id": self.config_entry.entry_id}
         if self.client.device:
             device = dr.async_get(self.hass).async_get_device({(DOMAIN, self.client.device.cid)})

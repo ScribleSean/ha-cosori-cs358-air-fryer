@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
@@ -44,8 +45,16 @@ def _in_steps(value: int) -> int:
     return value
 
 
-TEMPERATURE = vol.All(vol.Coerce(int), vol.Range(min=TEMP_MIN, max=TEMP_MAX), _in_steps)
-MINUTES = vol.All(vol.Coerce(int), vol.Range(min=MINUTES_MIN, max=MINUTES_MAX))
+def _whole(value: Any) -> int:
+    """Accept whole numbers only, so 170.9 or 1.9 is refused instead of silently cut down."""
+    number = float(value)
+    if not number.is_integer():
+        raise vol.Invalid("Must be a whole number")
+    return int(number)
+
+
+TEMPERATURE = vol.All(_whole, vol.Range(min=TEMP_MIN, max=TEMP_MAX), _in_steps)
+MINUTES = vol.All(_whole, vol.Range(min=MINUTES_MIN, max=MINUTES_MAX))
 
 
 def _coordinator(hass: HomeAssistant, entry_id: str | None = None) -> FryerCoordinator:

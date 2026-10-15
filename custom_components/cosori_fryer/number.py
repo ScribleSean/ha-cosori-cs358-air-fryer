@@ -59,14 +59,19 @@ class FryerSetting(FryerEntity, RestoreNumber):
         last = await self.async_get_last_number_data()
         if last is None or last.native_value is None:
             return
-        value = int(last.native_value)
-        if self.native_min_value <= value <= self.native_max_value:
-            setattr(self.coordinator, _FIELD[self.entity_description.key], value)
+        value = last.native_value
+        step = self.native_step or 1
+        if self.native_min_value <= value <= self.native_max_value and value % step == 0:
+            setattr(self.coordinator, _FIELD[self.entity_description.key], int(value))
 
     @property
     def native_value(self) -> float:
         return getattr(self.coordinator, _FIELD[self.entity_description.key])
 
     async def async_set_native_value(self, value: float) -> None:
-        setattr(self.coordinator, _FIELD[self.entity_description.key], int(value))
+        # Home Assistant checks the range but not the step; snap to the fryer's steps.
+        step = self.native_step or 1
+        snapped = round(value / step) * step
+        snapped = min(max(snapped, self.native_min_value), self.native_max_value)
+        setattr(self.coordinator, _FIELD[self.entity_description.key], int(snapped))
         self.async_write_ha_state()
