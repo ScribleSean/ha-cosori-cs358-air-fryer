@@ -62,6 +62,10 @@ python3 -m venv .venv
 .venv/bin/python -m pytest
 ```
 
+## Contributing
+
+Issues and pull requests are welcome. Run the tests above and `.venv/bin/ruff check .` before opening a pull request, and add a test for any behaviour you change.
+
 ## License
 
-MIT
+[MIT](LICENSE)
