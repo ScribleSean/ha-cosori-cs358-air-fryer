@@ -1,0 +1,8 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Placeholder token in an upstream pyvesync docstring example"
+condition = "AND"
+paths = ['''custom_components/cosori_fryer/_vendor/pyvesync/models/vesync_models\.py''']
+regexes = ['''abcdef1234567890''']
