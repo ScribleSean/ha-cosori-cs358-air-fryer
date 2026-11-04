@@ -1,28 +1,25 @@
-"""Shared base for the fryer's entities."""
-
-from __future__ import annotations
+"""Common coordinator entity metadata."""
 
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api import DEVICE_TYPE
 from .const import DOMAIN
 from .coordinator import FryerCoordinator
 
 
 class FryerEntity(CoordinatorEntity[FryerCoordinator]):
+    """An entity belonging to the discovered fryer."""
+
     _attr_has_entity_name = True
 
     def __init__(self, coordinator: FryerCoordinator, key: str) -> None:
         super().__init__(coordinator)
-        device = coordinator.client.device
-        if device is None:  # Entities are only created after the fryer was found.
-            raise RuntimeError("Fryer entity created before the fryer was found")
+        device = coordinator.device
         self._attr_translation_key = key
         self._attr_unique_id = f"{device.cid}_{key}"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device.cid)},
-            name=device.name,
-            manufacturer="COSORI",
-            model=DEVICE_TYPE,
+            name=device.device_name,
+            manufacturer="Cosori",
+            model="CS358-AF",
         )

@@ -1,140 +1,131 @@
 {
+  "title": "Cosori air fryer",
   "config": {
     "step": {
       "user": {
-        "title": "VeSync account",
-        "description": "Sign in with the VeSync account that has the air fryer.",
+        "title": "Connect to VeSync",
+        "description": "Use a separate VeSync account with the fryer shared to it. Signing in replaces other sessions for this account.",
         "data": {
           "email": "Email",
           "password": "Password"
-        },
-        "data_description": {
-          "email": "The email of the VeSync account the fryer is on.",
-          "password": "The password for that VeSync account."
         }
       },
       "reauth_confirm": {
-        "title": "Sign in again",
-        "description": "VeSync rejected the saved password for {email}. Enter the current one.",
+        "title": "Sign in to VeSync again",
+        "description": "The session has expired. Submitting this form replaces other sessions for this account.",
         "data": {
           "password": "Password"
-        },
-        "data_description": {
-          "password": "The current password for this VeSync account."
         }
       }
     },
     "error": {
-      "invalid_auth": "VeSync rejected that email or password.",
-      "cannot_connect": "Couldn't reach VeSync. Try again in a few minutes.",
-      "no_fryer": "There's no CS358-AF air fryer on this VeSync account.",
-      "unknown": "Something unexpected went wrong. Check the logs.",
-      "rate_limited": "VeSync limits how often you can sign in. Try again in a few minutes.",
-      "multiple_fryers": "There's more than one CS358-AF on this VeSync account. This integration supports one per account."
+      "invalid_auth": "Invalid email, password or session.",
+      "cannot_connect": "Unable to connect to VeSync.",
+      "no_fryer": "No CS358-AF found on this account.",
+      "multiple_fryers": "Share exactly one CS358-AF with this account."
     },
     "abort": {
-      "already_configured": "This VeSync account is already set up.",
-      "reauth_successful": "Signed in again.",
-      "wrong_account": "That password belongs to a different VeSync account.",
-      "already_in_progress": "This VeSync account is already being set up."
+      "already_configured": "This account is already configured.",
+      "already_in_progress": "This account is being configured.",
+      "reauth_successful": "Authentication successful.",
+      "wrong_account": "Sign in with the original account."
     }
   },
   "entity": {
-    "button": {
-      "preheat": {
-        "name": "Preheat"
-      },
-      "start": {
-        "name": "Start"
-      },
-      "stop": {
-        "name": "Stop"
-      }
-    },
-    "number": {
-      "cook_temperature": {
-        "name": "Cooking temperature"
-      },
-      "cook_time": {
-        "name": "Cooking time"
-      }
-    },
     "sensor": {
       "cook_status": {
         "name": "Cooking status",
         "state": {
           "standby": "Standby",
           "heating": "Preheating",
-          "preheat_stop": "Preheating stopped",
-          "preheat_end": "Preheating finished",
+          "preheat_stop": "Preheat paused",
+          "preheat_end": "Preheated",
           "cooking": "Cooking",
-          "cooking_stop": "Cooking stopped",
-          "cooking_end": "Cooking finished",
-          "pull_out": "Drawer pulled out",
+          "cooking_stop": "Cooking paused",
+          "cooking_end": "Finished",
+          "pull_out": "Basket removed",
           "ready": "Ready",
           "keeping_warm": "Keeping warm"
         }
       },
+      "current_temp": {
+        "name": "Current temperature"
+      },
       "cook_set_temp": {
-        "name": "Cooking set temperature"
+        "name": "Target temperature"
       },
-      "cook_set_time": {
-        "name": "Cooking set time"
+      "preheat_ends_at": {
+        "name": "Preheat ends at"
       },
-      "preheat_set_time": {
-        "name": "Preheating set time"
+      "cook_ends_at": {
+        "name": "Cook ends at"
+      }
+    },
+    "button": {
+      "stop": {
+        "name": "Stop"
       },
-      "remaining_time": {
-        "name": "Remaining time"
+      "start": {
+        "name": "Start cooking"
+      }
+    },
+    "event": {
+      "finished": {
+        "name": "Finished",
+        "event_types": {
+          "preheat_finished": "Preheat finished",
+          "cook_finished": "Cook finished"
+        }
       }
     }
   },
   "exceptions": {
-    "not_loaded": {
-      "message": "The air fryer isn't set up."
+    "command_refused": {
+      "message": "The fryer refused the command in its current state."
     },
-    "cannot_preheat": {
-      "message": "The air fryer can only preheat from standby or after cooking finished. It's {state}."
-    },
-    "cannot_start": {
-      "message": "The air fryer can only start from standby, after cooking finished, or when preheating has finished. It's {state}."
-    },
-    "cannot_stop": {
-      "message": "Nothing is running on the air fryer."
+    "not_preheated": {
+      "message": "Start cooking is only available after preheating has finished."
     },
     "auth_failed": {
-      "message": "VeSync rejected the saved password. Sign in again from Settings."
+      "message": "The VeSync session has expired. Sign in again in the integration settings."
     },
     "command_failed": {
-      "message": "The air fryer didn't respond: {error}"
+      "message": "Unable to complete the fryer command."
     },
     "choose_account": {
-      "message": "More than one VeSync account is configured. Select the account with config_entry_id."
+      "message": "Select exactly one loaded Cosori config entry."
     },
-    "duplicate_account": {
-      "message": "Another entry already uses this VeSync account. Remove one of them."
+    "invalid_temperature": {
+      "message": "Temperature must be 170–400 °F in 10 °F steps. Celsius is rounded to the nearest step."
+    },
+    "invalid_minutes": {
+      "message": "Minutes must be a whole number from 1 to 60."
     }
   },
   "services": {
-    "start_cooking": {
-      "name": "Start cooking",
-      "description": "Start a manual cooking program, optionally preheating first. The fryer must be in standby or finished.",
+    "start_cook": {
+      "name": "Start cook",
+      "description": "Start a manual cook, optionally with preheat.",
       "fields": {
         "temperature": {
           "name": "Temperature",
-          "description": "170 to 400 °F, in steps of 10."
+          "description": "Uses your Home Assistant temperature unit unless temperature_unit is supplied. Celsius is rounded to the nearest 10 °F; the resulting setting must be 170–400 °F."
         },
-        "cooking_time": {
-          "name": "Cooking time",
-          "description": "1 to 60 minutes."
+        "minutes": {
+          "name": "Minutes",
+          "description": "Whole minutes, from 1 to 60."
         },
         "preheat": {
           "name": "Preheat",
-          "description": "Preheat first. Press Start when preheating has finished to begin cooking."
+          "description": "Preheat before cooking. The fryer chooses the preheat duration."
+        },
+        "temperature_unit": {
+          "name": "Temperature unit",
+          "description": "Optional explicit °F or °C."
         },
         "config_entry_id": {
-          "name": "VeSync account",
-          "description": "The account containing the fryer. Required when more than one account is configured."
+          "name": "Account",
+          "description": "Required when more than one account is configured."
         }
       }
     }

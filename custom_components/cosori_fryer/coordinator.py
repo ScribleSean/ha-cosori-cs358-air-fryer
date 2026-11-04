@@ -1,251 +1,200 @@
-"""Polling, session handling and commands for the fryer."""
+"""Serialize device reads and commands without automatic sign-ins."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 
+from aiohttp import ClientError
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_EMAIL
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import (
-    ConfigEntryAuthFailed,
-    HomeAssistantError,
-    ServiceValidationError,
-)
-from homeassistant.helpers import device_registry as dr
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.util.hass_dict import HassKey
+from homeassistant.util import dt as dt_util
+from homeassistant.util.unit_conversion import TemperatureConverter
 
-from .api import AuthError, FryerClient, FryerError, FryerStatus, TokenRejected
-from .const import (
-    ACTIVE_LINGER_SECONDS,
-    CONF_ACCOUNT_ID,
-    CONF_COUNTRY_CODE,
-    CONF_LAST_LOGIN,
-    CONF_REGION,
-    CONF_TOKEN,
-    DEFAULT_MINUTES,
-    DEFAULT_TEMPERATURE,
-    DOMAIN,
-    EVENT_COOK_DONE,
-    EVENT_PREHEAT_DONE,
-    POLL_ACTIVE,
-    POLL_IDLE,
-    RELOGIN_COOLDOWN_SECONDS,
-    STATUS,
+from custom_components.cosori_fryer._vendor.pyvesync.const import ConnectionStatus, TemperatureUnits
+from custom_components.cosori_fryer._vendor.pyvesync.devices.vesynckitchen import VeSyncTurboBlazeFryer
+from custom_components.cosori_fryer._vendor.pyvesync.utils.errors import (
+    VeSyncError,
+    VeSyncLoginError,
+    VeSyncTokenError,
 )
+
+from .const import DOMAIN, POLL_ACTIVE, POLL_IDLE
+from .manager import FryerManager
 
 _LOGGER = logging.getLogger(__name__)
+AUTH_ERRORS = (VeSyncTokenError, VeSyncLoginError)
+READ_ERRORS = (VeSyncError, ClientError, TimeoutError, ValueError)
 
-# Statuses worth watching closely.
-_BUSY = {"heating", "preheatStop", "preheatEnd", "ready", "cooking", "cookStop", "keeping"}
+
+@dataclass(frozen=True)
+class FryerData:
+    """Snapshot values so pyvesync mutations cannot alter an earlier poll."""
+
+    status: str
+    current_temp: float | None
+    cook_set_temp: float | None
+    preheat_ends_at: datetime | None
+    cook_ends_at: datetime | None
+    finish: str | None
+    finish_sequence: int
+
 
 type FryerConfigEntry = ConfigEntry[FryerCoordinator]
 
-# Login attempts by email, shared by the setup and reauth forms and the coordinator.
-_LOGINS: HassKey[dict[str, float]] = HassKey(f"{DOMAIN}_logins")
 
+class FryerCoordinator(DataUpdateCoordinator[FryerData]):
+    """Poll one CS358-AF and report only read failures as unavailable."""
 
-def last_login(hass: HomeAssistant, email: str, entry: ConfigEntry | None = None) -> float | None:
-    """When this account last tried to sign in, here or before a restart."""
-    times = [hass.data.get(_LOGINS, {}).get(email.lower())]
-    if entry is not None:
-        times.append(entry.data.get(CONF_LAST_LOGIN))
-    return max((t for t in times if t is not None), default=None)
-
-
-def login_allowed(hass: HomeAssistant, email: str, entry: ConfigEntry | None = None) -> bool:
-    last = last_login(hass, email, entry)
-    return last is None or time.time() - last >= RELOGIN_COOLDOWN_SECONDS
-
-
-def note_login(hass: HomeAssistant, email: str, entry: ConfigEntry | None = None) -> None:
-    """Record an attempt before making it: failed and rate-limited ones need the same cooldown."""
-    now = time.time()
-    hass.data.setdefault(_LOGINS, {})[email.lower()] = now
-    if entry is not None:
-        # Wall-clock time in the entry survives Home Assistant restarts.
-        hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_LAST_LOGIN: now})
-
-
-def forget_login(hass: HomeAssistant, email: str, entry: ConfigEntry | None = None) -> None:
-    """A rejected password is a definite answer, so a new one can be tried straight away."""
-    hass.data.get(_LOGINS, {}).pop(email.lower(), None)
-    if entry is not None and CONF_LAST_LOGIN in entry.data:
-        data = {key: value for key, value in entry.data.items() if key != CONF_LAST_LOGIN}
-        hass.config_entries.async_update_entry(entry, data=data)
-
-
-class FryerCoordinator(DataUpdateCoordinator[FryerStatus]):
-    """Reads the fryer every 30 s while busy and every minute in standby."""
-
-    config_entry: FryerConfigEntry
-
-    def __init__(self, hass: HomeAssistant, entry: FryerConfigEntry, client: FryerClient) -> None:
-        super().__init__(
-            hass, _LOGGER, config_entry=entry, name=DOMAIN, update_interval=POLL_IDLE, always_update=False
-        )
-        self.client = client
-        # The values the Preheat and Start buttons use, set by the number entities.
-        self.temperature = DEFAULT_TEMPERATURE
-        self.minutes = DEFAULT_MINUTES
-        self._busy_until = 0.0
-        self._cycle: str | None = None  # "preheat" or "cook" while one is in progress
-        self._login_lock = asyncio.Lock()
-        self._password_rejected = False  # Until reauth reloads the entry with a new one.
-        # Polls and commands read the fryer one at a time, so states are seen in order.
-        self._read_lock = asyncio.Lock()
-
-    async def _async_setup(self) -> None:
-        """Find the fryer once, before the first status read."""
-        try:
-            await self._signed_in(self.client.find_fryer)
-        except FryerError as err:
-            raise UpdateFailed(str(err)) from err
-        session = self.client.session
-        if session is None or self.config_entry.unique_id == session.account_id:
-            return
-        # Entries from before 0.3.0 used the email as their unique id.
-        other = self.hass.config_entries.async_entry_for_domain_unique_id(DOMAIN, session.account_id)
-        if other is None:
-            self.hass.config_entries.async_update_entry(self.config_entry, unique_id=session.account_id)
-
-    async def _signed_in[T](self, request: Callable[[], Awaitable[T]]) -> T:
-        """Run a request, signing in again once if VeSync rejects the token."""
-        token = self.client.session.token if self.client.session else None
-        try:
-            return await request()
-        except TokenRejected:
-            await self._sign_in_again(token)
-            return await request()
-
-    async def _sign_in_again(self, rejected_token: str | None) -> None:
-        async with self._login_lock:
-            current = self.client.session.token if self.client.session else None
-            if current and current != rejected_token:
-                return  # Someone else already signed in while we waited.
-            if self._password_rejected:
-                raise ConfigEntryAuthFailed("VeSync rejected the stored password")
-            email = self.config_entry.data[CONF_EMAIL]
-            if not login_allowed(self.hass, email, self.config_entry):
-                raise FryerError("Signed out by another VeSync login; trying again shortly")
-            note_login(self.hass, email, self.config_entry)
-            try:
-                session = await self.client.login()
-            except AuthError as err:
-                self._password_rejected = True
-                # The reauth form can try a new password straight away.
-                forget_login(self.hass, email, self.config_entry)
-                raise ConfigEntryAuthFailed(str(err)) from err
-            self.hass.config_entries.async_update_entry(
-                self.config_entry,
-                data={
-                    **self.config_entry.data,
-                    CONF_TOKEN: session.token,
-                    CONF_ACCOUNT_ID: session.account_id,
-                    CONF_COUNTRY_CODE: session.country_code,
-                    CONF_REGION: session.region,
-                },
-            )
-
-    async def _async_update_data(self) -> FryerStatus:
-        async with self._read_lock:
-            try:
-                return await self._read()
-            except FryerError as err:
-                raise UpdateFailed(str(err)) from err
-
-    async def _read(self) -> FryerStatus:
-        """Read the fryer and act on what it says. Call with the read lock held."""
-        status = await self._signed_in(self.client.status)
-        self._track(status.state)
-        if status.state in _BUSY:
-            self._busy_until = time.monotonic() + ACTIVE_LINGER_SECONDS
-        self.update_interval = POLL_ACTIVE if time.monotonic() < self._busy_until else POLL_IDLE
-        return status
-
-    def _track(self, state: str) -> None:
-        """Fire an event when a preheat or a cook runs to the end.
-
-        The cycle is remembered through pauses and a pulled drawer, so a finish seen
-        after an interruption still counts. A stopped program goes to standby and
-        fires nothing, and a program already finished at startup isn't announced.
-        """
-        if state in ("heating", "preheatStop"):
-            self._cycle = "preheat"
-        elif state in ("cooking", "cookStop"):
-            self._cycle = "cook"
-        elif state == "preheatEnd" and self._cycle == "preheat":
-            self._cycle = None
-            self._fire(EVENT_PREHEAT_DONE)
-        elif state == "cookEnd" and self._cycle == "cook":
-            self._cycle = None
-            self._fire(EVENT_COOK_DONE)
-        elif state == "standby":
-            self._cycle = None
-
-    def _fire(self, event: str) -> None:
-        data = {"entry_id": self.config_entry.entry_id}
-        if self.client.device:
-            device = dr.async_get(self.hass).async_get_device({(DOMAIN, self.client.device.cid)})
-            if device:
-                data["device_id"] = device.id
-        self.hass.bus.async_fire(event, data)
-
-    async def _command(
+    def __init__(
         self,
-        allowed: Callable[[FryerStatus], bool],
-        refusal: str,
-        action: Callable[[FryerStatus], Awaitable[None]],
+        hass: HomeAssistant,
+        entry: FryerConfigEntry,
+        manager: FryerManager,
+        device: VeSyncTurboBlazeFryer,
     ) -> None:
-        """Read the fryer's state, check it allows the action, then run it, one command at a time."""
-        async with self._read_lock:
+        super().__init__(hass, _LOGGER, config_entry=entry, name=DOMAIN, update_interval=POLL_IDLE)
+        self.manager = manager
+        self.device = device
+        self._lock = asyncio.Lock()
+        self._cycle: str | None = None
+        self._finish: str | None = None
+        self._sequence = 0
+
+    async def _async_update_data(self) -> FryerData:
+        async with self._lock:
+            return await self._read()
+
+    async def _read(self) -> FryerData:
+        try:
+            async with asyncio.timeout(15):
+                await self.device.update()
+            if self.device.state.connection_status == ConnectionStatus.OFFLINE:
+                raise UpdateFailed("Fryer is offline")
+            if self.device.last_response is None or self.device.last_response.code != 0:
+                raise UpdateFailed("Fryer status could not be read")
+        except AUTH_ERRORS as err:
+            raise ConfigEntryAuthFailed from err
+        except READ_ERRORS as err:
+            raise UpdateFailed("Fryer status could not be read") from err
+        state = self.device.state
+        # The fork maps ready to cookStop and keeping to cooking. Preserve
+        # these distinct phases from the saved response.
+        response = self.device.last_response.response_data
+        outer = response.get("result", {}) if isinstance(response, dict) else {}
+        if not isinstance(outer, dict):
+            raise UpdateFailed("Fryer status could not be read")
+        reported = outer.get("result", {})
+        if outer.get("code") != 0 or not isinstance(reported, dict) or "cookStatus" not in reported:
+            raise UpdateFailed("Fryer status could not be read")
+        raw_status = reported["cookStatus"]
+        status = {"ready": "ready", "keeping": "keeping_warm"}.get(raw_status, state.cook_status)
+        if status in ("heating", "preheatStop"):
+            self._cycle = "preheat"
+        elif status in ("cooking", "cookStop"):
+            self._cycle = "cook"
+        elif (status == "preheatEnd" and self._cycle == "preheat") or (
+            status == "cookEnd" and self._cycle == "cook"
+        ):
+            self._finish = f"{self._cycle}_finished"
+            self._sequence += 1
+            self._cycle = None
+        elif status in ("standby", "ready"):
+            self._cycle = None
+        self.update_interval = POLL_ACTIVE if state.is_running else POLL_IDLE
+        now = dt_util.utcnow()
+
+        def stable_end(seconds, previous):
+            if seconds is None:
+                return None
+            end = now + timedelta(seconds=seconds)
+            if previous is not None and abs((end - previous).total_seconds()) <= 5:
+                return previous
+            return end
+
+        previous = self.data
+        return FryerData(
+            status=status,
+            current_temp=self._celsius(state.current_temp),
+            cook_set_temp=self._celsius(state.cook_set_temp),
+            preheat_ends_at=stable_end(
+                state.preheat_time_remaining, previous.preheat_ends_at if previous else None
+            )
+            if status == "heating" and state.preheat_time_remaining is not None
+            else None,
+            cook_ends_at=stable_end(state.cook_time_remaining, previous.cook_ends_at if previous else None)
+            if status == "cooking" and state.cook_time_remaining is not None
+            else None,
+            finish=self._finish,
+            finish_sequence=self._sequence,
+        )
+
+    def _celsius(self, value: int | None) -> float | None:
+        if value is None:
+            return None
+        return (
+            TemperatureConverter.convert(value, "°F", "°C")
+            if self.device.temp_unit == TemperatureUnits.FAHRENHEIT
+            else value
+        )
+
+    async def command(
+        self, allowed: set[str], action: Callable[[], Awaitable[bool]], refusal: str = "command_refused"
+    ) -> None:
+        """Check fresh state; a refusal does not change read availability."""
+        async with self._lock:
             try:
-                status = await self._read()
-                # Show what was just read, even if the command is refused.
-                self.async_set_updated_data(status)
-                if not allowed(status):
-                    raise ServiceValidationError(
-                        translation_domain=DOMAIN,
-                        translation_key=refusal,
-                        translation_placeholders={
-                            "state": STATUS.get(status.state, status.state).replace("_", " ")
-                        },
-                    )
-                await self._signed_in(lambda: action(status))
-            except ConfigEntryAuthFailed as err:
+                data = await self._read()
+                self.async_set_updated_data(data)
+                if data.status not in allowed:
+                    raise ServiceValidationError(translation_domain=DOMAIN, translation_key=refusal)
+                async with asyncio.timeout(15):
+                    success = await action()
+                response = self.device.last_response
+                outer = (
+                    response.response_data.get("result", {})
+                    if response and isinstance(response.response_data, dict)
+                    else {}
+                )
+                if not success or not isinstance(outer, dict) or outer.get("code") != 0:
+                    raise HomeAssistantError(translation_domain=DOMAIN, translation_key="command_refused")
+            except (ConfigEntryAuthFailed, *AUTH_ERRORS) as err:
+                self.async_set_update_error(err)
                 self.config_entry.async_start_reauth(self.hass)
                 raise HomeAssistantError(translation_domain=DOMAIN, translation_key="auth_failed") from err
-            except FryerError as err:
-                raise HomeAssistantError(
-                    translation_domain=DOMAIN,
-                    translation_key="command_failed",
-                    translation_placeholders={"error": str(err)},
-                ) from err
-        self._busy_until = time.monotonic() + ACTIVE_LINGER_SECONDS
+            except (UpdateFailed, *READ_ERRORS) as err:
+                self.async_set_update_error(err)
+                raise HomeAssistantError(translation_domain=DOMAIN, translation_key="command_failed") from err
         await self.async_request_refresh()
 
-    async def start_cooking(self, temperature: int, minutes: int, *, preheat: bool) -> None:
-        """Start a manual program, optionally preheating first."""
-        await self._command(
-            lambda s: s.can_preheat if preheat else s.idle,
-            "cannot_preheat" if preheat else "cannot_start",
-            lambda _: self.client.start(temperature, minutes, preheat=preheat),
-        )
+    async def start_cook(self, temperature: int, minutes: int, preheat: bool) -> None:
+        # A positive value enables preheat. The CS358-AF firmware chooses its duration.
+        # Use Fahrenheit for commands so pyvesync validates the device's actual step grid.
+        async def start() -> bool:
+            self.device.temp_unit = TemperatureUnits.FAHRENHEIT
+            return await self.device.set_mode(minutes * 60, temperature, preheat_time=1 if preheat else 0)
 
-    async def press_start(self) -> None:
-        """The fryer's Start button: cook from standby, or continue once preheated."""
-
-        async def start(status: FryerStatus) -> None:
-            if status.preheated:
-                await self.client.continue_after_preheat()
-            else:
-                await self.client.start(self.temperature, self.minutes, preheat=False)
-
-        await self._command(lambda s: s.can_start, "cannot_start", start)
+        await self.command({"standby", "cookEnd"}, start)
 
     async def stop(self) -> None:
-        await self._command(lambda s: s.can_stop, "cannot_stop", lambda _: self.client.stop())
+        await self.command(
+            {
+                "heating",
+                "preheatStop",
+                "preheatEnd",
+                "cooking",
+                "cookStop",
+                "pullOut",
+                "ready",
+                "keeping_warm",
+            },
+            self.device.end,
+        )
+
+    async def start_from_preheat(self) -> None:
+        await self.command({"preheatEnd"}, self.device.cook_from_preheat, "not_preheated")

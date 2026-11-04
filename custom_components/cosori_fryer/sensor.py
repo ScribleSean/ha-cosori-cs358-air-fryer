@@ -1,23 +1,19 @@
-"""Fryer sensors: status, set temperature and time remaining."""
+"""Status, measured temperatures and phase end timestamps."""
 
-from __future__ import annotations
-
-import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
+    SensorStateClass,
 )
-from homeassistant.const import UnitOfTemperature, UnitOfTime
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.const import UnitOfTemperature
 
-from .api import FryerStatus
 from .const import STATUS
-from .coordinator import FryerConfigEntry, FryerCoordinator
+from .coordinator import FryerData
 from .entity import FryerEntity
 
 PARALLEL_UPDATES = 0
@@ -25,11 +21,9 @@ PARALLEL_UPDATES = 0
 
 @dataclass(frozen=True, kw_only=True)
 class FryerSensorDescription(SensorEntityDescription):
-    value: Callable[[FryerStatus], str | int | None]
+    """A value from an immutable coordinator snapshot."""
 
-
-def _minutes(seconds: int | None) -> int | None:
-    return None if seconds is None else math.ceil(seconds / 60)
+    value_fn: Callable[[FryerData], str | float | datetime | None]
 
 
 SENSORS = (
@@ -37,50 +31,41 @@ SENSORS = (
         key="cook_status",
         device_class=SensorDeviceClass.ENUM,
         options=list(STATUS.values()),
-        value=lambda s: STATUS.get(s.state),
+        value_fn=lambda d: STATUS.get(d.status),
+    ),
+    FryerSensorDescription(
+        key="current_temp",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        value_fn=lambda d: d.current_temp,
     ),
     FryerSensorDescription(
         key="cook_set_temp",
         device_class=SensorDeviceClass.TEMPERATURE,
-        native_unit_of_measurement=UnitOfTemperature.FAHRENHEIT,
-        value=lambda s: None if s.idle else s.cook_set_temp,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        value_fn=lambda d: d.cook_set_temp,
     ),
     FryerSensorDescription(
-        key="cook_set_time",
-        device_class=SensorDeviceClass.DURATION,
-        native_unit_of_measurement=UnitOfTime.MINUTES,
-        value=lambda s: None if s.idle else _minutes(s.cook_set_time),
+        key="preheat_ends_at", device_class=SensorDeviceClass.TIMESTAMP, value_fn=lambda d: d.preheat_ends_at
     ),
     FryerSensorDescription(
-        key="preheat_set_time",
-        device_class=SensorDeviceClass.DURATION,
-        native_unit_of_measurement=UnitOfTime.MINUTES,
-        value=lambda s: _minutes(s.preheat_set_time),
-    ),
-    FryerSensorDescription(
-        key="remaining_time",
-        device_class=SensorDeviceClass.DURATION,
-        native_unit_of_measurement=UnitOfTime.MINUTES,
-        value=lambda s: _minutes(s.seconds_left),
+        key="cook_ends_at", device_class=SensorDeviceClass.TIMESTAMP, value_fn=lambda d: d.cook_ends_at
     ),
 )
 
 
-async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: FryerConfigEntry,
-    async_add_entities: AddConfigEntryEntitiesCallback,
-) -> None:
+async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities(FryerSensor(entry.runtime_data, description) for description in SENSORS)
 
 
 class FryerSensor(FryerEntity, SensorEntity):
-    entity_description: FryerSensorDescription
+    """A fryer sensor following core VeSync entity descriptions."""
 
-    def __init__(self, coordinator: FryerCoordinator, description: FryerSensorDescription) -> None:
+    def __init__(self, coordinator, description):
         super().__init__(coordinator, description.key)
         self.entity_description = description
 
     @property
-    def native_value(self) -> str | int | None:
-        return self.entity_description.value(self.coordinator.data)
+    def native_value(self):
+        return self.entity_description.value_fn(self.coordinator.data)

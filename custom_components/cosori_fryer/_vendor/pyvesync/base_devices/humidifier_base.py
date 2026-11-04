@@ -1,0 +1,619 @@
+"""Base Device and State Class for VeSync Humidifiers."""
+
+from __future__ import annotations
+
+import logging
+from abc import abstractmethod
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from custom_components.cosori_fryer._vendor.pyvesync.base_devices.vesyncbasedevice import DeviceState, VeSyncBaseToggleDevice
+from custom_components.cosori_fryer._vendor.pyvesync.const import DeviceStatus, DryingModes, HumidifierFeatures, HumidifierModes
+from custom_components.cosori_fryer._vendor.pyvesync.models.bypass_models import ResponseBaseModel
+
+if TYPE_CHECKING:
+    from custom_components.cosori_fryer._vendor.pyvesync import VeSync
+    from custom_components.cosori_fryer._vendor.pyvesync.device_map import HumidifierMap
+    from custom_components.cosori_fryer._vendor.pyvesync.models.humidifier_models import SproutBreathinglamp
+    from custom_components.cosori_fryer._vendor.pyvesync.models.vesync_models import ResponseDeviceDetailsModel
+
+
+logger = logging.getLogger(__name__)
+
+
+class HumidifierState(DeviceState):
+    """State Class for VeSync Humidifiers.
+
+    This is the state class for all vesync humidifiers. If there are
+    new features or state attributes.
+
+    Attributes:
+        auto_preference (int): Auto preference level.
+        auto_stop_target_reached (bool): Automatic stop target reached.
+        auto_target_humidity (int): Target humidity level.
+        automatic_stop_config (bool): Automatic stop configuration.
+        display_set_status (str): Display set status.
+        display_status (str): Display status.
+        drying_mode_auto_switch (str): Drying mode auto switch status.
+        drying_mode_level (int): Drying mode level.
+        drying_mode_status (str): Drying mode status.
+        drying_mode_time_remain (int): Drying mode time remaining.
+        filter_life_percent (int): Filter life percentage.
+        humidity (int): Current humidity level.
+        humidity_high (bool): High humidity status.
+        mist_level (int): Mist level.
+        mist_virtual_level (int): Mist virtual level.
+        mode (str): Current mode.
+        nightlight_brightness (int): Nightlight brightness level.
+        nightlight_status (str): Nightlight status.
+        temperature (float): Current temperature.
+        warm_mist_enabled (bool): Warm mist enabled status.
+        warm_mist_level (int): Warm mist level.
+        water_lacks (bool): Water lacks status.
+        water_tank_lifted (bool): Water tank lifted status.
+    """
+
+    __slots__ = (
+        'auto_preference',
+        'auto_stop_target_reached',
+        'auto_target_humidity',
+        'automatic_stop_config',
+        'breathing_lamp',
+        'child_lock',
+        'display_set_status',
+        'display_status',
+        'drying_mode_auto_switch',
+        'drying_mode_level',
+        'drying_mode_status',
+        'drying_mode_time_remain',
+        'filter_life',
+        'hepa_filter_life',
+        'humidity',
+        'humidity_high',
+        'mist_level',
+        'mist_virtual_level',
+        'mode',
+        'nightlight_brightness',
+        'nightlight_color_temp',
+        'nightlight_status',
+        'rgb_nightlight_blue',
+        'rgb_nightlight_brightness',
+        'rgb_nightlight_color_mode',
+        'rgb_nightlight_green',
+        'rgb_nightlight_red',
+        'rgb_nightlight_set_time',
+        'rgb_nightlight_status',
+        'temperature',
+        'warm_mist_enabled',
+        'warm_mist_level',
+        'water_lacks',
+        'water_lacks_drying_switch',
+        'water_tank_lifted',
+    )
+
+    def __init__(
+        self,
+        device: VeSyncHumidifier,
+        details: ResponseDeviceDetailsModel,
+        feature_map: HumidifierMap,
+    ) -> None:
+        """Initialize VeSync Humidifier State.
+
+        This state class is used to store the current state of the humidifier.
+
+        Args:
+            device (VeSyncHumidifier): The device object.
+            details (ResponseDeviceDetailsModel): The device details.
+            feature_map (HumidifierMap): The feature map for the device.
+        """
+        super().__init__(device, details, feature_map)
+        self.auto_stop_target_reached: bool = False
+        self.auto_target_humidity: int | None = None
+        self.automatic_stop_config: bool = False
+        self.display_set_status: str = DeviceStatus.UNKNOWN
+        self.display_status: str = DeviceStatus.UNKNOWN
+        self.humidity: int | None = None
+        self.humidity_high: bool = False
+        self.mist_level: int | None = None
+        self.mist_virtual_level: int | None = None
+        self.mode: str | None = None
+        self.nightlight_brightness: int | None = None
+        self.nightlight_status: str | None = None
+        self.rgb_nightlight_status: str | None = None
+        self.rgb_nightlight_brightness: int | None = None
+        self.rgb_nightlight_red: int | None = None
+        self.rgb_nightlight_green: int | None = None
+        self.rgb_nightlight_blue: int | None = None
+        self.rgb_nightlight_color_mode: str | None = None
+        self.rgb_nightlight_set_time: float | None = None
+        self.nightlight_color_temp: int | None = None
+        self.warm_mist_enabled: bool | None = None
+        self.warm_mist_level: int | None = None
+        self.water_lacks: bool = False
+        self.water_tank_lifted: bool = False
+        self.child_lock: bool | None = None
+        self.temperature: float | None = None  # Fahrenheit
+        # Superior 6000S States / Sprout
+        self.auto_preference: int | None = None
+        self.filter_life: int | None = None
+        self.drying_mode_level: int | None = None
+        self.drying_mode_auto_switch: str | None = None
+        self.drying_mode_status: DryingModes | None = None
+        self.drying_mode_time_remain: int | None = None
+        self.water_lacks_drying_switch: str | None = None
+        self.hepa_filter_life: int | None = None
+        self.breathing_lamp: BreathingLampState | None = None
+
+    @property
+    def automatic_stop(self) -> bool:
+        """Return the automatic stop status.
+
+        Returns:
+            bool: True if automatic stop is enabled, False otherwise.
+        """
+        return self.automatic_stop_config
+
+    @property
+    def target_humidity(self) -> int | None:
+        """Return the target humidity level.
+
+        Returns:
+            int: Target humidity level.
+        """
+        return self.auto_target_humidity
+
+    @property
+    def auto_humidity(self) -> int | None:
+        """Return the auto humidity level.
+
+        Returns:
+            int: Auto humidity level.
+        """
+        return self.auto_target_humidity
+
+    @property
+    def auto_enabled(self) -> bool:
+        """Return True if auto mode is enabled."""
+        return self.mode in [HumidifierModes.AUTO, self.mode, HumidifierModes.HUMIDITY]
+
+    @property
+    def drying_mode_state(self) -> str | None:
+        """Return the drying mode state.
+
+        Returns:
+            str | None: Drying mode state.
+        """
+        return self.drying_mode_status
+
+    @property
+    def drying_mode_seconds_remaining(self) -> int | None:
+        """Return the drying mode seconds remaining.
+
+        Return:
+            int | None: Drying mode seconds remaining.
+        """
+        return self.drying_mode_time_remain
+
+    @property
+    def drying_mode_running(self) -> bool:
+        """Return True if drying mode is enabled.
+
+        Returns:
+            bool | None: True if drying mode is enabled, False otherwise.
+        """
+        return self.drying_mode_status == DryingModes.RUNNING
+
+    @property
+    def breathing_lamp_status(self) -> str | None:
+        """Return the breathing lamp status.
+
+        Returns:
+            str | None: Breathing lamp status.
+        """
+        if self.breathing_lamp is not None:
+            return self.breathing_lamp.breathing_lamp_switch
+        return None
+
+
+class VeSyncHumidifier(VeSyncBaseToggleDevice):
+    """VeSyncHumdifier Base Class.
+
+    This is the base device to be inherited by all Humidifier devices.
+    This class only holds the device configuration and static attributes.
+    The state attribute holds the current state.
+
+    Attributes:
+        state (HumidifierState): The state of the humidifier.
+        last_response (ResponseInfo): Last response from API call.
+        manager (VeSync): Manager object for API calls.
+        device_name (str): Name of device.
+        device_image (str): URL for device image.
+        cid (str): Device ID.
+        connection_type (str): Connection type of device.
+        device_type (str): Type of device.
+        type (str): Type of device.
+        uuid (str): UUID of device, not always present.
+        config_module (str): Configuration module of device.
+        mac_id (str): MAC ID of device.
+        current_firm_version (str): Current firmware version of device.
+        device_region (str): Region of device. (US, EU, etc.)
+        pid (str): Product ID of device, pulled by some devices on update.
+        sub_device_no (int): Sub-device number of device.
+        product_type (str): Product type of device.
+        features (dict): Features of device.
+        mist_levels (list): List of mist levels.
+        mist_modes (list): List of mist modes.
+        target_minmax (tuple): Tuple of target min and max values.
+        warm_mist_levels (list): List of warm mist levels.
+
+    """
+
+    __slots__ = (
+        '_reverse_mist_modes',
+        'mist_levels',
+        'mist_modes',
+        'target_minmax',
+        'warm_mist_levels',
+    )
+
+    def __init__(
+        self,
+        details: ResponseDeviceDetailsModel,
+        manager: VeSync,
+        feature_map: HumidifierMap,
+    ) -> None:
+        """Initialize VeSync Humidifier Class.
+
+        Args:
+            details (ResponseDeviceDetailsModel): The device details.
+            manager (VeSync): The VeSync manager.
+            feature_map (HumidifierMap): The feature map for the device.
+        """
+        super().__init__(details, manager, feature_map)
+        self.state: HumidifierState = HumidifierState(self, details, feature_map)
+        self.mist_modes: dict[str, str] = feature_map.mist_modes
+        self._reverse_mist_modes: dict[str, str] = {}
+        for k, v in self.mist_modes.items():
+            self._reverse_mist_modes[v] = k
+        self.mist_levels: list[int] = feature_map.mist_levels
+        self.features: list[str] = feature_map.features
+        self.warm_mist_levels: list[int] = feature_map.warm_mist_levels
+        self.target_minmax: tuple[int, int] = feature_map.target_minmax
+
+    @property
+    def supports_warm_mist(self) -> bool:
+        """Return True if the humidifier supports warm mist.
+
+        Returns:
+            bool: True if warm mist is supported, False otherwise.
+        """
+        return HumidifierFeatures.WARM_MIST in self.features
+
+    @property
+    def supports_nightlight(self) -> bool:
+        """Return True if the humidifier supports nightlight.
+
+        Returns:
+            bool: True if nightlight is supported, False otherwise.
+        """
+        return HumidifierFeatures.NIGHTLIGHT in self.features
+
+    @property
+    def supports_nightlight_brightness(self) -> bool:
+        """Return True if the humidifier supports nightlight brightness."""
+        return HumidifierFeatures.NIGHTLIGHT_BRIGHTNESS in self.features
+
+    @property
+    def supports_rgb_nightlight(self) -> bool:
+        """Return True if the humidifier supports RGB nightlight.
+
+        Returns:
+            bool: True if RGB nightlight is supported, False otherwise.
+        """
+        return HumidifierFeatures.RGB_NIGHTLIGHT in self.features
+
+    @property
+    def supports_drying_mode(self) -> bool:
+        """Return True if the humidifier supports drying mode."""
+        return HumidifierFeatures.DRYING_MODE in self.features
+
+    async def toggle_automatic_stop(self, toggle: bool | None = None) -> bool:
+        """Toggle automatic stop.
+
+        Args:
+            toggle (bool | None): True to enable automatic stop, False to disable.
+
+        Returns:
+            bool: Success of request.
+        """
+        del toggle
+        if HumidifierFeatures.AUTO_STOP in self.features:
+            logger.warning('Automatic stop has not been configured for this device.')
+            return False
+        logger.warning('Automatic stop is not supported or configured for this device.')
+        return False
+
+    async def toggle_display(self, toggle: bool) -> bool:
+        """Toggle the display on/off.
+
+        Args:
+            toggle (bool): True to turn on the display, False to turn off.
+
+        Returns:
+            bool: Success of request.
+        """
+        del toggle
+        logger.warning('Display is not supported or configured for this device.')
+        return False
+
+    @abstractmethod
+    async def set_mode(self, mode: str) -> bool:
+        """Set Humidifier Mode.
+
+        Args:
+            mode (str): Humidifier mode.
+
+        Returns:
+            bool: Success of request.
+
+        Note:
+            Modes for device are defined in `self.mist_modes`.
+        """
+
+    @abstractmethod
+    async def set_mist_level(self, level: int) -> bool:
+        """Set Mist Level for Humidifier.
+
+        Args:
+            level (int): Mist level.
+
+        Returns:
+            bool: Success of request.
+
+        Note:
+            Mist levels are defined in `self.mist_levels`.
+        """
+
+    async def turn_on_display(self) -> bool:
+        """Turn on the display.
+
+        Returns:
+            bool: Success of request.
+        """
+        return await self.toggle_display(True)
+
+    async def turn_off_display(self) -> bool:
+        """Turn off the display.
+
+        Returns:
+            bool: Success of request.
+        """
+        return await self.toggle_display(False)
+
+    async def turn_on_automatic_stop(self) -> bool:
+        """Turn on automatic stop.
+
+        Returns:
+            bool: Success of request.
+        """
+        return await self.toggle_automatic_stop(True)
+
+    async def turn_off_automatic_stop(self) -> bool:
+        """Turn off automatic stop.
+
+        Returns:
+            bool: Success of request.
+        """
+        return await self.toggle_automatic_stop(False)
+
+    async def set_auto_mode(self) -> bool:
+        """Set Humidifier to Auto Mode.
+
+        Returns:
+            bool: Success of request.
+        """
+        if HumidifierModes.AUTO in self.mist_modes:
+            return await self.set_mode(HumidifierModes.AUTO)
+        logger.error('Auto mode not supported for this device.')
+        return False
+
+    async def set_manual_mode(self) -> bool:
+        """Set Humidifier to Manual Mode.
+
+        Returns:
+            bool: Success of request.
+        """
+        if HumidifierModes.MANUAL in self.mist_modes:
+            return await self.set_mode(HumidifierModes.MANUAL)
+        logger.error('Manual mode not supported for this device.')
+        return False
+
+    async def set_sleep_mode(self) -> bool:
+        """Set Humidifier to Sleep Mode.
+
+        Returns:
+            bool: Success of request.
+        """
+        if HumidifierModes.SLEEP in self.mist_modes:
+            return await self.set_mode(HumidifierModes.SLEEP)
+        logger.error('Sleep mode not supported for this device.')
+        return False
+
+    async def set_humidity(self, humidity: int) -> bool:
+        """Set Humidifier Target Humidity.
+
+        Args:
+            humidity (int): Target humidity level.
+
+        Returns:
+            bool: Success of request.
+        """
+        del humidity
+        logger.error('Target humidity is not supported or configured for this device.')
+        return False
+
+    async def set_nightlight_brightness(self, brightness: int) -> bool:
+        """Set Humidifier night light brightness.
+
+        Args:
+            brightness (int): Target night light brightness.
+
+        Returns:
+            bool: Success of request.
+        """
+        del brightness
+        if not self.supports_nightlight_brightness:
+            logger.error('Nightlight brightness is not supported for this device.')
+            return False
+        logger.error('Nightlight brightness has not been configured.')
+        return False
+
+    async def toggle_nightlight(self, toggle: bool | None = None) -> bool:
+        """Toggle night light on/off.
+
+        Args:
+            toggle (bool): True to turn on night light, False to turn off.
+
+        Returns:
+            bool: Success of request.
+        """
+        del toggle
+        if not self.supports_nightlight:
+            logger.error('Nightlight is not supported for this device.')
+            return False
+        logger.error('Nightlight has not been configured.')
+        return False
+
+    async def set_rgb_nightlight(
+        self,
+        power: bool | None = None,
+        brightness: int | None = None,
+        red: int | None = None,
+        green: int | None = None,
+        blue: int | None = None,
+    ) -> bool:
+        """Set RGB nightlight state and color.
+
+        Args:
+            power: Turn nightlight on (True) or off (False).
+            brightness: Brightness level (0-100).
+            red: Red color value (0-255).
+            green: Green color value (0-255).
+            blue: Blue color value (0-255).
+
+        Returns:
+            bool: Success of request.
+        """
+        del power, brightness, red, green, blue
+        if not self.supports_rgb_nightlight:
+            logger.error('RGB Nightlight is not supported for this device.')
+            return False
+        logger.error('RGB Nightlight has not been configured.')
+        return False
+
+    async def set_warm_level(self, warm_level: int) -> bool:
+        """Set Humidifier Warm Level.
+
+        Args:
+            warm_level (int): Target warm level.
+
+        Returns:
+            bool: Success of request.
+        """
+        del warm_level
+        if self.supports_warm_mist:
+            logger.error('Warm level has not been configured.')
+            return False
+        logger.error('Warm level is not supported for this device.')
+        return False
+
+    async def turn_on_nightlight(self) -> bool:
+        """Turn on night light.
+
+        Returns:
+            bool: Success of request.
+        """
+        return await self.toggle_nightlight(True)
+
+    async def turn_off_nightlight(self) -> bool:
+        """Turn off night light.
+
+        Returns:
+            bool: Success of request.
+        """
+        return await self.toggle_nightlight(False)
+
+    async def toggle_drying_mode(self, toggle: bool | None = None) -> bool:
+        """enable/disable drying filters after turning off."""
+        del toggle
+        if self.supports_drying_mode:
+            logger.error('Drying mode is not configured for this device.')
+            return False
+        logger.error('Drying mode is not supported for this device.')
+        return False
+
+    async def turn_on_drying_mode(self) -> bool:
+        """Turn on drying mode."""
+        return await self.toggle_drying_mode(True)
+
+    async def turn_off_drying_mode(self) -> bool:
+        """Turn off drying mode."""
+        return await self.toggle_drying_mode(False)
+
+    async def toggle_child_lock(self, toggle: bool | None = None) -> bool:
+        """Toggle child lock on/off.
+
+        Args:
+            toggle (bool): True to turn on child lock, False to turn off.
+
+        Returns:
+            bool: Success of request.
+        """
+        del toggle
+        logger.error('Child lock is not supported or configured for this device.')
+        return False
+
+    async def turn_on_child_lock(self) -> bool:
+        """Turn on child lock.
+
+        Returns:
+            bool: Success of request.
+        """
+        return await self.toggle_child_lock(True)
+
+    async def turn_off_child_lock(self) -> bool:
+        """Turn off child lock.
+
+        Returns:
+            bool: Success of request.
+        """
+        return await self.toggle_child_lock(False)
+
+
+@dataclass
+class BreathingLampState(ResponseBaseModel):
+    """Breathing Lamp State Object."""
+
+    breathing_lamp_switch: str
+    color_temperature: int
+    time_interval: int
+    brightness_start: int
+    brightness_end: int
+
+    @classmethod
+    def from_model(cls, model: SproutBreathinglamp) -> BreathingLampState:
+        """Create BreathingLampState from SproutBreathinglamp model.
+
+        Args:
+            model (SproutBreathinglamp): The SproutBreathinglamp model.
+
+        Returns:
+            BreathingLampState: The created BreathingLampState object.
+        """
+        return cls(
+            breathing_lamp_switch=DeviceStatus.from_int(model.breathingLampSwitch),
+            color_temperature=model.colorTemperature,
+            time_interval=model.timeInterval,
+            brightness_start=model.brightnessStart,
+            brightness_end=model.brightnessEnd,
+        )

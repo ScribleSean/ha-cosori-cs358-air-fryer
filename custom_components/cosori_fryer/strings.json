@@ -1,0 +1,133 @@
+{
+  "title": "Cosori air fryer",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to VeSync",
+        "description": "Use a separate VeSync account with the fryer shared to it. Signing in replaces other sessions for this account.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Sign in to VeSync again",
+        "description": "The session has expired. Submitting this form replaces other sessions for this account.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid email, password or session.",
+      "cannot_connect": "Unable to connect to VeSync.",
+      "no_fryer": "No CS358-AF found on this account.",
+      "multiple_fryers": "Share exactly one CS358-AF with this account."
+    },
+    "abort": {
+      "already_configured": "This account is already configured.",
+      "already_in_progress": "This account is being configured.",
+      "reauth_successful": "Authentication successful.",
+      "wrong_account": "Sign in with the original account."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "cook_status": {
+        "name": "Cooking status",
+        "state": {
+          "standby": "Standby",
+          "heating": "Preheating",
+          "preheat_stop": "Preheat paused",
+          "preheat_end": "Preheated",
+          "cooking": "Cooking",
+          "cooking_stop": "Cooking paused",
+          "cooking_end": "Finished",
+          "pull_out": "Basket removed",
+          "ready": "Ready",
+          "keeping_warm": "Keeping warm"
+        }
+      },
+      "current_temp": {
+        "name": "Current temperature"
+      },
+      "cook_set_temp": {
+        "name": "Target temperature"
+      },
+      "preheat_ends_at": {
+        "name": "Preheat ends at"
+      },
+      "cook_ends_at": {
+        "name": "Cook ends at"
+      }
+    },
+    "button": {
+      "stop": {
+        "name": "Stop"
+      },
+      "start": {
+        "name": "Start cooking"
+      }
+    },
+    "event": {
+      "finished": {
+        "name": "Finished",
+        "event_types": {
+          "preheat_finished": "Preheat finished",
+          "cook_finished": "Cook finished"
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "command_refused": {
+      "message": "The fryer refused the command in its current state."
+    },
+    "not_preheated": {
+      "message": "Start cooking is only available after preheating has finished."
+    },
+    "auth_failed": {
+      "message": "The VeSync session has expired. Sign in again in the integration settings."
+    },
+    "command_failed": {
+      "message": "Unable to complete the fryer command."
+    },
+    "choose_account": {
+      "message": "Select exactly one loaded Cosori config entry."
+    },
+    "invalid_temperature": {
+      "message": "Temperature must be 170–400 °F in 10 °F steps. Celsius is rounded to the nearest step."
+    },
+    "invalid_minutes": {
+      "message": "Minutes must be a whole number from 1 to 60."
+    }
+  },
+  "services": {
+    "start_cook": {
+      "name": "Start cook",
+      "description": "Start a manual cook, optionally with preheat.",
+      "fields": {
+        "temperature": {
+          "name": "Temperature",
+          "description": "Uses your Home Assistant temperature unit unless temperature_unit is supplied. Celsius is rounded to the nearest 10 °F; the resulting setting must be 170–400 °F."
+        },
+        "minutes": {
+          "name": "Minutes",
+          "description": "Whole minutes, from 1 to 60."
+        },
+        "preheat": {
+          "name": "Preheat",
+          "description": "Preheat before cooking. The fryer chooses the preheat duration."
+        },
+        "temperature_unit": {
+          "name": "Temperature unit",
+          "description": "Optional explicit °F or °C."
+        },
+        "config_entry_id": {
+          "name": "Account",
+          "description": "Required when more than one account is configured."
+        }
+      }
+    }
+  }
+}

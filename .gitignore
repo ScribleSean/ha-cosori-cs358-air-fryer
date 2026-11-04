@@ -11,3 +11,6 @@ AGENTS.md
 .codex/
 HANDOFF*
 *.local.md
+
+.tools/
+SPEC.md

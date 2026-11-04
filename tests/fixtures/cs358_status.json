@@ -1,0 +1,34 @@
+{
+  "code": 0,
+  "result": {
+    "code": 0,
+    "result": {
+      "stepArray": [
+        {
+          "cookSetTime": 600,
+          "cookTemp": 350,
+          "mode": "Custom",
+          "cookLastTime": 480,
+          "shakeTime": 0,
+          "cookEndTime": 0,
+          "recipeName": "Manual Cook",
+          "recipeId": 1,
+          "recipeType": 3
+        }
+      ],
+      "cookMode": "programs",
+      "tempUnit": "f",
+      "stepIndex": 0,
+      "cookStatus": "cooking",
+      "preheatSetTime": 0,
+      "preheatLastTime": 0,
+      "preheatEndTime": 0,
+      "preheatTemp": 0,
+      "startTime": 1791695863,
+      "totalTimeRemaining": 480,
+      "currentTemp": 0,
+      "appointLastTime": 0,
+      "shakeStatus": 0
+    }
+  }
+}

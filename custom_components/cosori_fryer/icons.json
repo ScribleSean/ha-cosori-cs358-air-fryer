@@ -1,45 +1,22 @@
 {
   "entity": {
+    "sensor": {
+      "cook_status": {
+        "default": "mdi:chef-hat"
+      }
+    },
     "button": {
-      "preheat": {
-        "default": "mdi:fire"
+      "stop": {
+        "default": "mdi:stop"
       },
       "start": {
         "default": "mdi:play"
-      },
-      "stop": {
-        "default": "mdi:stop"
       }
     },
-    "number": {
-      "cook_temperature": {
-        "default": "mdi:thermometer"
-      },
-      "cook_time": {
-        "default": "mdi:timer-outline"
+    "event": {
+      "finished": {
+        "default": "mdi:check-circle"
       }
-    },
-    "sensor": {
-      "cook_status": {
-        "default": "mdi:pot-steam-outline"
-      },
-      "cook_set_temp": {
-        "default": "mdi:thermometer"
-      },
-      "cook_set_time": {
-        "default": "mdi:timer-outline"
-      },
-      "preheat_set_time": {
-        "default": "mdi:fire"
-      },
-      "remaining_time": {
-        "default": "mdi:timer-sand"
-      }
-    }
-  },
-  "services": {
-    "start_cooking": {
-      "service": "mdi:pot-steam-outline"
     }
   }
 }

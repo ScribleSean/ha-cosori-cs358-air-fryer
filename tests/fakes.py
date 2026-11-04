@@ -1,87 +1,101 @@
-"""Fakes shared by the tests. VeSync is never contacted."""
+"""Recorded HTTP boundary with the real vendored device and decoder."""
 
-from __future__ import annotations
+import json
+from copy import deepcopy
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
-from typing import Any
+from custom_components.cosori_fryer._vendor.pyvesync.device_map import get_air_fryer
+from custom_components.cosori_fryer._vendor.pyvesync.devices.vesynckitchen import VeSyncTurboBlazeFryer
+from custom_components.cosori_fryer._vendor.pyvesync.models.vesync_models import ResponseDeviceDetailsModel
+from custom_components.cosori_fryer.manager import FryerManager
 
-from custom_components.cosori_fryer.api import (
-    Device,
-    FryerStatus,
-    NoFryer,
-    Session,
-    TokenRejected,
-    check_settings,
-)
-
-DEVICE = Device(
-    cid="CID-1",
-    name="Air Fryer",
-    config_module="WiFiBTOnboarding_AirFryer_CS358-AF_US",
-    region="US",
-)
-
-
-def raw(state: str, **extra: Any) -> dict[str, Any]:
-    result = {
-        "cookStatus": state,
-        "stepIndex": 0,
-        "stepArray": [{"cookTemp": 360, "cookSetTime": 600, "cookLastTime": 600, "mode": "Custom"}],
-        "preheatTemp": 360,
-        "preheatSetTime": 240,
-        "preheatLastTime": 0,
-        "totalTimeRemaining": 600,
-    }
-    result.update(extra)
-    return result
+ENTRY_DATA = {
+    "email": "test@example.com",
+    "password": "test-password",
+    "token": "test-token",
+    "account_id": "test-account",
+    "country_code": "US",
+    "region": "US",
+}
+RECORDED = json.loads((Path(__file__).parent / "fixtures/cs358_status.json").read_text())
 
 
-class FakeClient:
-    """Stands in for FryerClient, recording the commands it is given."""
+class FakeDevice:
+    """Control only HTTP responses; all device methods run their real code."""
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        self.session = kwargs.get("session") or (args[4] if len(args) > 4 else None)
-        self.device: Device | None = None
-        self.result = raw("standby")
-        self.commands: list[tuple] = []
-        self.logins = 0
-        self.reject_token = False
-        self.login_error: Exception | None = None
-        self.find_error: Exception | None = None
-        self.no_fryer = False
+    def __init__(self):
+        self.status = "standby"
+        self.current_temp = 100  # Firmware always reports currentTemp in Celsius.
+        self.preheat_remaining = 240
+        self.cook_remaining = 600
+        self.error = None
+        self.command_error = None
+        self.response_code = 0
+        self.command_code = 0
+        self.command_inner_code = 0
+        self.malformed = False
+        self.commands = []
+        actual_manager = FryerManager("test@example.com", "test-password")
+        actual_manager.set_credentials("test-token", "test-account", "US", "US")
+        actual_manager.async_call_api = AsyncMock(side_effect=self.http)
+        details = ResponseDeviceDetailsModel(
+            deviceRegion="US",
+            isOwner=False,
+            deviceName="Air fryer",
+            cid="test-cid",
+            connectionType="WiFi",
+            deviceType="CS358-AF",
+            type="wifi",
+            configModule="test",
+        )
+        self.real = VeSyncTurboBlazeFryer(details, actual_manager, get_air_fryer("CS358-AF"))
 
-    terminal_id = "2abc"
+    def __getattr__(self, key):
+        return getattr(self.real, key)
 
-    async def login(self) -> Session:
-        self.logins += 1
-        if self.login_error:
-            raise self.login_error
-        self.reject_token = False
-        self.session = Session(token=f"token-{self.logins}", account_id="ACCOUNT-1")
-        return self.session
+    async def http(self, endpoint, method, request, headers):
+        payload = request.to_dict()["payload"]
+        if payload["method"] != "getAirfryerStatus":
+            self.commands.append(payload)
+            if self.command_error:
+                raise self.command_error
+            return {"code": self.command_code, "result": {"code": self.command_inner_code, "result": {}}}, 200
+        if self.error:
+            raise self.error
+        if self.malformed:
+            return {"code": 0, "result": []}, 200
+        response = deepcopy(RECORDED)
+        response["code"] = self.response_code
+        raw = response["result"]["result"]
+        raw.update(
+            cookStatus=self.status,
+            currentTemp=self.current_temp,
+            preheatSetTime=240,
+            preheatLastTime=self.preheat_remaining,
+            preheatTemp=350,
+            totalTimeRemaining=self.preheat_remaining + self.cook_remaining,
+        )
+        raw["stepArray"][0]["cookLastTime"] = self.cook_remaining
+        if self.status == "standby":
+            raw["stepArray"] = []
+        return response, 200
 
-    async def _guard(self) -> None:
-        if self.session is None or self.reject_token:
-            raise TokenRejected("rejected")
 
-    async def find_fryer(self) -> Device:
-        await self._guard()
-        if self.find_error:
-            raise self.find_error
-        if self.no_fryer:
-            raise NoFryer("No CS358-AF on this VeSync account")
-        self.device = DEVICE
-        return DEVICE
+def fake_manager(device):
+    manager = SimpleNamespace(
+        devices=[device.real],
+        auth=SimpleNamespace(is_authenticated=False),
+        **{key: value for key, value in ENTRY_DATA.items() if key in ("token", "account_id", "country_code")},
+        current_region="US",
+    )
 
-    async def status(self) -> FryerStatus:
-        await self._guard()
-        return FryerStatus.parse(self.result)
+    async def login():
+        manager.auth.is_authenticated = True
+        return True
 
-    async def start(self, temperature: int, minutes: int, *, preheat: bool) -> None:
-        check_settings(temperature, minutes)
-        self.commands.append(("start", temperature, minutes, preheat))
-
-    async def continue_after_preheat(self) -> None:
-        self.commands.append(("continue",))
-
-    async def stop(self) -> None:
-        self.commands.append(("stop",))
+    manager.login = AsyncMock(side_effect=login)
+    manager.get_devices = AsyncMock(return_value=True)
+    manager.set_credentials = lambda *args: setattr(manager.auth, "is_authenticated", True)
+    return manager

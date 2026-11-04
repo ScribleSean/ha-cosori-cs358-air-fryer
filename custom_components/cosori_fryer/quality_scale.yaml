@@ -1,0 +1,30 @@
+# Core quality scale self-assessment; no tier is claimed.
+rules:
+  action-setup: done
+  appropriate-polling: done
+  common-modules: done
+  config-flow: done
+  config-flow-test-coverage: done
+  dependency-transparency: done
+  docs-actions: done
+  docs-high-level-description: done
+  docs-installation-instructions: done
+  docs-removal-instructions: done
+  entity-event-setup: done
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data: done
+  test-before-configure: done
+  test-before-setup: done
+  unique-config-entry: done
+  config-entry-unloading: done
+  reauthentication-flow: done
+  diagnostics: done
+  entity-unavailable: done
+  action-exceptions: done
+  parallel-updates: done
+  entity-translations: done
+  exception-translations: done
+  icon-translations: done
+  test-coverage: todo
+  strict-typing: todo

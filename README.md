@@ -1,71 +1,36 @@
-# COSORI CS358-AF air fryer for Home Assistant
+# Cosori air fryer
 
-A custom integration for the COSORI Pro II 5.8 Qt Smart Air Fryer (CS358-AF), through the VeSync cloud.
+Home Assistant custom integration for the Cosori Pro II CS358-AF, using pyvesync and the VeSync cloud.
 
-Home Assistant's built-in VeSync integration doesn't support this model yet; support is proposed upstream in [webdjoe/pyvesync#557](https://github.com/webdjoe/pyvesync/pull/557). Use this until the built-in integration supports the CS358-AF.
+In HACS, add this repository as a custom repository with category **Integration**, install it, and restart Home Assistant. Under **Settings → Devices & services → Add integration**, select **Cosori air fryer** and enter your VeSync email and password.
 
-Unofficial. Not affiliated with COSORI, VeSync or Home Assistant.
+VeSync permits one session per account. Signing in with the same account in the phone app can expire Home Assistant's session. Use a second VeSync account and share the fryer with it from the primary account. Home Assistant asks you to sign in again when its session expires; it does not automatically sign in again.
 
-## Entities
+Entities: cooking status, current temperature, target temperature, preheat end and cook end timestamps, Stop, Start cooking, and a Finished event with `preheat_finished` and `cook_finished` types. Timestamps are unknown while paused or staged. A relative-time dashboard display counts down between polls; see [dashboard example](examples/dashboard.yaml). Start cooking continues the queued cook only after preheating. The example shows that button conditionally.
 
-| Kind | Entities |
-| --- | --- |
-| Buttons | Preheat, Start, Stop |
-| Settings | Cooking temperature (170 to 400 °F, steps of 10), Cooking time (1 to 60 min) |
-| Sensors | Cooking status, Cooking set temperature, Cooking set time, Preheating set time, Remaining time |
+Use the `cosori_fryer.start_cook` action. All three cook fields are required:
 
-The buttons work like the ones on the fryer:
-
-- **Preheat** heats to the cooking temperature, with a cook of the cooking time queued behind it.
-- **Start** cooks at the cooking temperature for the cooking time. Once preheating has finished, it starts the queued cook instead.
-- **Stop** ends a preheat or a cook.
-
-Cooking temperature and Cooking time are the values the next Preheat or Start uses. Changing them sends nothing to the fryer.
-
-A button is unavailable whenever the fryer can't do it, for example Preheat while cooking, or anything while the drawer is out.
-
-Sensor names and Cooking status states match the built-in VeSync integration. Remaining time counts down the phase that's running: the preheat, then the cook.
-
-The fryer is read every 30 seconds while busy and every minute in standby.
-
-Tested on a physical US unit. Not supported: cloud pause and resume (pulling the drawer pauses the fryer), presets, and current temperature, which the fryer always reports as 0.
-
-## Action
-
-`cosori_fryer.start_cooking` starts a manual program: `temperature` in °F (170 to 400, in steps of 10), `cooking_time` in minutes (1 to 60), and optionally `preheat: true`. It's refused, with the reason, unless the fryer is in standby or finished. With more than one VeSync account set up, pass `config_entry_id`.
-
-## Events
-
-`cosori_fryer_preheat_done` and `cosori_fryer_cook_done` fire when a preheat or a cook is seen running to the end, including after a pause or a pulled drawer. A stopped cook fires nothing, and a cycle that ended while Home Assistant wasn't running isn't announced. Both carry `device_id`. `examples/automations.yaml` turns them into phone notifications.
-
-## Before you install
-
-- **This starts a heating appliance remotely.** Only start it with the drawer in and the fryer clear.
-- **VeSync allows one session per account.** Anything else signed in to the account, including the VeSync app and the built-in VeSync integration, signs this out and the other way round. Sign-in attempts are at least five minutes apart; until it's signed in again, the sensors and buttons are unavailable. Give it a VeSync account of its own, with the fryer shared to it.
-- **One fryer per account,** and Home Assistant 2025.3 or later.
-
-## Install
-
-With [HACS](https://hacs.xyz): add this repository as a custom repository of type Integration, install it, and restart Home Assistant. By hand: copy `custom_components/cosori_fryer` into your config's `custom_components` folder and restart.
-
-Then add "COSORI Air Fryer (CS358)" under Settings, Devices & services. If VeSync later rejects the password, Home Assistant asks you to sign in again.
-
-## Examples
-
-`examples/` has optional YAML: notification automations, scripts for Assist, and voice sentences with replies. Entity IDs follow the fryer's name in the VeSync app; the examples assume "Air Fryer".
-
-## Tests
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest
+```yaml
+action: cosori_fryer.start_cook
+data:
+  temperature: 350
+  temperature_unit: "°F"
+  minutes: 10
+  preheat: true
 ```
 
-## Contributing
+Without `temperature_unit`, temperature uses Home Assistant's configured unit. Celsius values are rounded to the nearest 10 °F, then checked against 170–400 °F. For example, 180 °C sends 360 °F. With debug logging on, the log records the Fahrenheit setting sent. Time is 1–60 whole minutes. With multiple accounts, supply `config_entry_id`.
 
-Issues and pull requests are welcome. Run the tests above and `.venv/bin/ruff check .` before opening a pull request, and add a test for any behaviour you change.
+Limits: one CS358-AF per account, cloud access required, 60-second idle and 15-second running polls. The firmware chooses preheat duration; no resume command is available for paused programs. Finish events require observing the running phase. A private copy of pyvesync is bundled until upstream supports this model. Existing installations migrate automatically; expect one request to sign in again after upgrading. The integration registers no Assist phrase that starts heating. Siri setup and confirmation instructions are in [the Shortcut guide](examples/siri.md).
 
-## License
+Development on Ubuntu with Python 3.14.2 or newer:
 
-[MIT](LICENSE)
+```sh
+python3.14 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pytest
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
+```
+
+To remove: delete the integration under **Settings → Devices & services**, uninstall it in HACS, then restart Home Assistant.

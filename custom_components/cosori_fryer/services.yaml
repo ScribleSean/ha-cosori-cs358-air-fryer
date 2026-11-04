@@ -1,27 +1,29 @@
-start_cooking:
+start_cook:
   fields:
-    config_entry_id:
-      selector:
-        config_entry:
-          integration: cosori_fryer
     temperature:
       required: true
-      default: 360
+      example: 350
       selector:
         number:
-          min: 170
-          max: 400
-          step: 10
-          unit_of_measurement: "°F"
-    cooking_time:
+          mode: box
+    minutes:
       required: true
-      default: 10
       selector:
         number:
           min: 1
           max: 60
-          unit_of_measurement: min
+          mode: box
     preheat:
-      default: false
+      required: true
       selector:
         boolean:
+    temperature_unit:
+      selector:
+        select:
+          options:
+            - "°F"
+            - "°C"
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: cosori_fryer
