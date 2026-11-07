@@ -17,7 +17,7 @@ from custom_components.cosori_fryer._vendor.pyvesync.models.bypass_models import
 
 @dataclass
 class Fryer158RequestModel(RequestBaseModel):
-    """Request model for air fryer commands."""
+    """Request model for CS137/CS158 (Bypass V1) air fryer commands."""
 
     acceptLanguage: str
     accountID: str
@@ -56,14 +56,14 @@ class Fryer158RequestModel(RequestBaseModel):
 
 @dataclass
 class Fryer158Result(BypassV1Result):
-    """Result model for air fryer details."""
+    """Result model for CS137/CS158 (Bypass V1) air fryer details."""
 
     returnStatus: Fryer158CookingReturnStatus
 
 
 @dataclass
 class Fryer158CookingReturnStatus(ResponseBaseModel):
-    """Result returnStatus model for air fryer status."""
+    """Result returnStatus model for CS137/CS158 air fryer status."""
 
     cookStatus: str
     currentTemp: int | None = None
@@ -76,18 +76,36 @@ class Fryer158CookingReturnStatus(ResponseBaseModel):
     preheatSetTime: int | None = None
     targetTemp: int | None = None
     customRecipe: str | None = None
+    # The API misspells currentTemp as curentTemp; accept both spellings
+    # in case the API is fixed.
+    curentTemp: int | None = None
+
+    @property
+    def current_temp(self) -> int | None:
+        """Return the current temperature from either API key."""
+        if self.currentTemp is not None:
+            return self.currentTemp
+        return self.curentTemp
 
 
 @dataclass
 class Fryer158CookRequest(RequestBaseModel):
-    """Base request model for air fryer cooking commands."""
+    """Base request model for air fryer cooking commands.
+
+    Not used by the library; ``VeSyncAirFryer158`` builds its request bodies
+    as dicts.
+    """
 
     cookMode: Annotated[Fryer158CookModeBase, Discriminator(include_subtypes=True)]
 
 
 @dataclass
 class Fryer158PreheatRequest(RequestBaseModel):
-    """Base request model for air fryer preheat commands."""
+    """Base request model for air fryer preheat commands.
+
+    Not used by the library; ``VeSyncAirFryer158`` builds its request bodies
+    as dicts.
+    """
 
     preheat: Annotated[Fryer158PreheatModeBase, Discriminator(include_subtypes=True)]
 
@@ -99,7 +117,7 @@ class Fryer158CookModeBase(RequestBaseModel):
 
 @dataclass
 class Fryer158CookModeFromPreheat(Fryer158CookModeBase):
-    """Model for continuing a cooking mode."""
+    """Model for starting the cook after preheat. Not used by the library."""
 
     cookStatus: str
     accountId: str
@@ -108,14 +126,14 @@ class Fryer158CookModeFromPreheat(Fryer158CookModeBase):
 
 @dataclass
 class Fryer158CookModeChange(Fryer158CookModeBase):
-    """Model for stopping a cooking mode."""
+    """Model for a cook status change (stop, resume, end). Not used by the library."""
 
     cookStatus: str
 
 
 @dataclass
 class Fryer158CookModeStart(Fryer158CookModeBase):
-    """Model for starting a cooking mode."""
+    """Model for starting a cooking mode. Not used by the library."""
 
     cookStatus: str
     accountId: str
@@ -137,14 +155,14 @@ class Fryer158PreheatModeBase(RequestBaseModel):
 
 @dataclass
 class Fryer158PreheatModeChange(Fryer158PreheatModeBase):
-    """Model for continuing a preheat mode."""
+    """Model for a preheat status change (stop, resume, end). Not used by the library."""
 
     preheatStatus: str
 
 
 @dataclass
 class Fryer158PreheatModeStart(Fryer158PreheatModeBase):
-    """Model for starting a preheat mode."""
+    """Model for starting a preheat mode. Not used by the library."""
 
     preheatStatus: str
     accountId: str
@@ -161,11 +179,11 @@ class Fryer158PreheatModeStart(Fryer158PreheatModeBase):
 
 @dataclass
 class FryerTurboBlazeDetailResult(BypassV2InnerResult):
-    """Result model for TurboBlaze air fryer details."""
+    """Result model for TurboBlaze and Dual Blaze air fryer details."""
 
     stepArray: list[FryerTurboBlazeStepItem]
     cookMode: str
-    tempUnit: str
+    tempUnit: str | None
     stepIndex: int
     cookStatus: str
     preheatSetTime: int
@@ -195,7 +213,7 @@ class FryerTurboBlazeStepItem(ResponseBaseModel):
 
 @dataclass
 class FryerTurboBlazeRequestData(RequestBaseModel):
-    """Request model for TurboBlaze air fryer cooking commands."""
+    """Request model for TurboBlaze (CAF-DC601S) startCook commands."""
 
     accountId: str
     hasWarm: bool
@@ -211,6 +229,23 @@ class FryerTurboBlazeRequestData(RequestBaseModel):
 
 
 @dataclass
+class FryerDualBlazeRequestData(RequestBaseModel):
+    """Request model for Dual Blaze (CAF-P583S) startCook commands."""
+
+    accountID: str
+    hasLinkage: bool
+    hasWarm: bool
+    mode: str
+    readyStart: bool
+    recipeId: int
+    recipeName: str
+    recipeType: int
+    tempUnit: str
+    startAct: FryerTurboBlazeStartActItem
+    hasPreheat: int = 0
+
+
+@dataclass
 class FryerTurboBlazeStartActItem(RequestBaseModel):
     """Data model for TurboBlaze air fryer startAct items."""
 
@@ -220,7 +255,7 @@ class FryerTurboBlazeStartActItem(RequestBaseModel):
     shakeTime: int = 0
 
 
-# Dual Air Fryer Models (CAF-TF101S)
+# Dual Air Fryer Models (CAF-TF101S, CAF-TF102S, CAF-DC111S)
 
 
 @dataclass
@@ -247,7 +282,7 @@ class FryerDualMultiStatusResult(BypassV2InnerResult):
     """Result model for dual air fryer getAirfryerMultiStatus response."""
 
     statusList: list[FryerDualChamberStatusItem]
-    tempUnit: str = 'c'
+    tempUnit: str | None = None
     syncType: int = 0
     workChamber: int = 0
 

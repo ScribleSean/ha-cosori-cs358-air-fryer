@@ -252,10 +252,12 @@ class VeSync:  # pylint: disable=function-redefined
 
         Args:
             filename (str | Path | None): The name of the file to load credentials from.
-                If None, no action is taken.
+                If None, `.vesync_auth` is searched for in the current working
+                directory and then the user's home directory.
 
         Returns:
-            bool: True if credentials were loaded successfully, False otherwise.
+            bool: True if credentials were loaded successfully, False if the file was
+                not found, could not be parsed or the credentials were incomplete.
         """
         return await self.auth.load_credentials_from_file(filename)
 
@@ -403,8 +405,12 @@ class VeSync:  # pylint: disable=function-redefined
         done, _ = await asyncio.wait(update_tasks, return_when=asyncio.ALL_COMPLETED)
         for task in done:
             exc = task.exception()
-            if exc is not None and isinstance(exc, VeSyncError):
+            if exc is None:
+                continue
+            if isinstance(exc, VeSyncError):
                 logger.error('Error updating device: %s', exc)
+            else:
+                logger.error('Unexpected error updating device: %s', exc, exc_info=exc)
 
     async def __aenter__(self) -> Self:
         """Asynchronous context manager enter."""
