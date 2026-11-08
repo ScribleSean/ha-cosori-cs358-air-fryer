@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 SOURCE = "https://github.com/ScribleSean/pyvesync"
-DEFAULT_COMMIT = "efaa5d2469d7a4c590914a08b7e5b4f63a97ddcc"
+DEFAULT_COMMIT = "ab273812e816019c554d290e2e2d853d1f7e5ce6"
 PACKAGE = "custom_components.cosori_fryer._vendor.pyvesync"
 ROOT = Path(__file__).resolve().parents[1]
 
