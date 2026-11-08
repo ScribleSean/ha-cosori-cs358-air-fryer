@@ -72,9 +72,13 @@
     "event": {
       "finished": {
         "name": "Finished",
-        "event_types": {
-          "preheat_finished": "Preheat finished",
-          "cook_finished": "Cook finished"
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "preheat_finished": "Preheat finished",
+              "cook_finished": "Cook finished"
+            }
+          }
         }
       }
     }
