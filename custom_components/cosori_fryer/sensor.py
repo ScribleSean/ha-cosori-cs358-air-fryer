@@ -38,6 +38,7 @@ SENSORS = (
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        entity_registry_enabled_default=False,
         value_fn=lambda d: d.current_temp,
     ),
     FryerSensorDescription(

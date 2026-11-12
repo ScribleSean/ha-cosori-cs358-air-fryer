@@ -4,7 +4,7 @@ cards:
   - type: entities
     entities:
       - sensor.air_fryer_cooking_status
-      - sensor.air_fryer_current_temperature
+      - sensor.air_fryer_target_temperature
       - entity: sensor.air_fryer_preheat_ends_at
         format: relative
       - entity: sensor.air_fryer_cook_ends_at

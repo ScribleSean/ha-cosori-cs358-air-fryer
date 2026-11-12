@@ -118,9 +118,11 @@ class FryerCoordinator(DataUpdateCoordinator[FryerData]):
             return end
 
         previous = self.data
+        # Firmware 2.0.06 reports a constant 0 instead of a measurement.
+        current_temp = self._celsius(state.current_temp) if reported.get("currentTemp") else None
         return FryerData(
             status=status,
-            current_temp=self._celsius(state.current_temp),
+            current_temp=current_temp,
             cook_set_temp=self._celsius(state.cook_set_temp),
             preheat_ends_at=stable_end(
                 state.preheat_time_remaining, previous.preheat_ends_at if previous else None

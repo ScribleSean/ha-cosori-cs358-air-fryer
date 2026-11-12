@@ -27,7 +27,8 @@ class FakeDevice:
 
     def __init__(self):
         self.status = "standby"
-        self.current_temp = 100  # Firmware always reports currentTemp in Celsius.
+        self.current_temp = 100  # Celsius when reported; the recorded firmware sends 0.
+        self.cook_temp = 350
         self.preheat_remaining = 240
         self.cook_remaining = 600
         self.error = None
@@ -61,6 +62,10 @@ class FakeDevice:
             self.commands.append(payload)
             if self.command_error:
                 raise self.command_error
+            if payload["method"] == "startCook" and not (self.command_code or self.command_inner_code):
+                # The fryer keeps the settings it was sent and reports them back.
+                self.cook_temp = payload["data"]["startAct"]["cookTemp"]
+                self.cook_remaining = payload["data"]["startAct"]["cookSetTime"]
             return {"code": self.command_code, "result": {"code": self.command_inner_code, "result": {}}}, 200
         if self.error:
             raise self.error
@@ -74,10 +79,11 @@ class FakeDevice:
             currentTemp=self.current_temp,
             preheatSetTime=240,
             preheatLastTime=self.preheat_remaining,
-            preheatTemp=350,
+            preheatTemp=self.cook_temp,
             totalTimeRemaining=self.preheat_remaining + self.cook_remaining,
         )
         raw["stepArray"][0]["cookLastTime"] = self.cook_remaining
+        raw["stepArray"][0]["cookTemp"] = self.cook_temp
         if self.status == "standby":
             raw["stepArray"] = []
         return response, 200

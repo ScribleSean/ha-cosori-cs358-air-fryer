@@ -4,7 +4,7 @@
     "step": {
       "user": {
         "title": "Connect to VeSync",
-        "description": "Use a separate VeSync account with the fryer shared to it. Signing in replaces other sessions for this account.",
+        "description": "Signing in here signs the VeSync phone app out of this account.",
         "data": {
           "email": "Email",
           "password": "Password"
@@ -12,7 +12,7 @@
       },
       "reauth_confirm": {
         "title": "Sign in to VeSync again",
-        "description": "The session has expired. Submitting this form replaces other sessions for this account.",
+        "description": "Signing in here signs the VeSync phone app out of this account.",
         "data": {
           "password": "Password"
         }
@@ -100,7 +100,7 @@
       "message": "Select exactly one loaded Cosori config entry."
     },
     "invalid_temperature": {
-      "message": "Temperature must be 170–400 °F in 10 °F steps. Celsius is rounded to the nearest step."
+      "message": "Temperature must be 170–400 °F in 10 °F steps. °C is rounded to the nearest step."
     },
     "invalid_minutes": {
       "message": "Minutes must be a whole number from 1 to 60."
@@ -109,27 +109,27 @@
   "services": {
     "start_cook": {
       "name": "Start cook",
-      "description": "Start a manual cook, optionally with preheat.",
+      "description": "Start a cook at a set temperature and time.",
       "fields": {
         "temperature": {
           "name": "Temperature",
-          "description": "Uses your Home Assistant temperature unit unless temperature_unit is supplied. Celsius is rounded to the nearest 10 °F; the resulting setting must be 170–400 °F."
+          "description": "170–400 °F in 10 °F steps. °C is rounded to the nearest step."
         },
         "minutes": {
           "name": "Minutes",
-          "description": "Whole minutes, from 1 to 60."
+          "description": "1 to 60."
         },
         "preheat": {
           "name": "Preheat",
-          "description": "Preheat before cooking. The fryer chooses the preheat duration."
+          "description": "Preheat first, then wait for Start cooking."
         },
         "temperature_unit": {
           "name": "Temperature unit",
-          "description": "Optional explicit °F or °C."
+          "description": "Defaults to the Home Assistant unit."
         },
         "config_entry_id": {
           "name": "Account",
-          "description": "Required when more than one account is configured."
+          "description": "Only needed with more than one account."
         }
       }
     }

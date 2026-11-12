@@ -7,6 +7,7 @@ import voluptuous as vol
 from fakes import ENTRY_DATA
 from homeassistant.config_entries import ConfigEntryDisabler, ConfigEntryState
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_system import METRIC_SYSTEM, US_CUSTOMARY_SYSTEM
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
@@ -38,7 +39,7 @@ async def start(hass, **changes):
 async def test_setup(hass, manager, caplog):
     entry = await setup(hass, manager)
     assert entry.state is ConfigEntryState.LOADED
-    assert len(hass.states.async_all("sensor")) == 5
+    assert len(hass.states.async_all("sensor")) == 4
     assert len(hass.states.async_all("button")) == 2
     assert len(hass.states.async_all("event")) == 1
     assert not hass.states.async_all("number")
@@ -115,7 +116,7 @@ async def test_entities_every_state(hass, manager, device, status):
     )
 
 
-async def test_phase_timestamps_and_current_temperature(hass, manager, device):
+async def test_phase_timestamps(hass, manager, device):
     device.status = "heating"
     entry = await setup(hass, manager)
     await refresh(hass, entry)
@@ -125,15 +126,63 @@ async def test_phase_timestamps_and_current_temperature(hass, manager, device):
         240, abs=2
     )
     assert entry.runtime_data.data.cook_ends_at is None
-    assert entry.runtime_data.data.current_temp == pytest.approx(100)
-    device.current_temp = 150
     device.status = "cooking"
     await refresh(hass, entry)
-    assert entry.runtime_data.data.current_temp == pytest.approx(150)
     assert (entry.runtime_data.data.cook_ends_at - dt_util.utcnow()).total_seconds() == pytest.approx(
         600, abs=2
     )
     assert hass.states.get("sensor.air_fryer_cook_ends_at").attributes["device_class"] == "timestamp"
+
+
+async def test_current_temperature_zero_is_unknown_and_hidden(hass, manager, device):
+    """The recorded firmware response has currentTemp 0 in every phase."""
+    device.status = "cooking"
+    device.current_temp = 0
+    entry = await setup(hass, manager)
+    assert entry.runtime_data.data.current_temp is None
+    assert hass.states.get("sensor.air_fryer_current_temperature") is None
+    registry = er.async_get(hass)
+    assert registry.async_get("sensor.air_fryer_current_temperature").disabled_by is not None
+    device.current_temp = 150
+    await refresh(hass, entry)
+    assert entry.runtime_data.data.current_temp == pytest.approx(150)
+
+
+async def test_preheat_then_start_keeps_temperature_and_time(hass, manager, device, freezer):
+    """Preheat at 400 °F for 12 min, then Start cooking continues with the same settings."""
+    entry = await setup(hass, manager)
+    await start(hass, temperature=400, minutes=12)
+    sent = device.commands[0]
+    assert sent["method"] == "startCook"
+    assert sent["data"]["hasPreheat"] == 1
+    assert sent["data"]["startAct"] == {
+        "cookSetTime": 720,
+        "cookTemp": 400,
+        "preheatTemp": 400,
+        "shakeTime": 0,
+    }
+    target = "sensor.air_fryer_target_temperature"
+    for raw in ("heating", "preheatEnd"):
+        device.status = raw
+        await refresh(hass, entry)
+        assert float(hass.states.get(target).state) == pytest.approx(400)
+        assert entry.runtime_data.data.cook_ends_at is None
+    # Waiting at preheatEnd sends nothing on its own, however long it lasts.
+    freezer.tick(timedelta(minutes=5))
+    await refresh(hass, entry)
+    assert len(device.commands) == 1
+    await hass.services.async_call(
+        "button", "press", {"entity_id": "button.air_fryer_start_cooking"}, blocking=True
+    )
+    assert device.commands[1]["method"] == "preheatCook"
+    assert device.commands[1]["data"] == {}
+    device.status = "cooking"
+    await refresh(hass, entry)
+    assert float(hass.states.get(target).state) == pytest.approx(400)
+    assert (entry.runtime_data.data.cook_ends_at - dt_util.utcnow()).total_seconds() == pytest.approx(
+        720, abs=2
+    )
+    assert hass.states.get("event.air_fryer_finished").attributes["event_type"] == "preheat_finished"
 
 
 async def test_start_350_ten_minutes(hass, manager, device):
