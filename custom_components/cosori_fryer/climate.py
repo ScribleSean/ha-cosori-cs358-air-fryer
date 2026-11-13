@@ -133,13 +133,11 @@ class FryerClimate(FryerEntity, ClimateEntity, RestoreEntity):
                 self.async_write_ha_state()
                 return
             if self._sending is not None:
-                # The start is already on its way; stop once it lands. The poll may not
-                # show it yet, so stop on fresh state; a refusal means it never started.
+                # The start is already on its way; stop once it lands.
                 await self._sending.wait()
-                with contextlib.suppress(ServiceValidationError):
-                    await self.coordinator.stop()
-                return
-            if self._running:
+            # The last poll can be a minute old, so always ask: stop reads fresh state,
+            # ends a cook started at the fryer, and refuses when it is idle.
+            with contextlib.suppress(ServiceValidationError):
                 await self.coordinator.stop()
             return
         if self.coordinator.data.status == "preheatEnd":

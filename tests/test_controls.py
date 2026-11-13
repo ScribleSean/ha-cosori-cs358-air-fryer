@@ -5,7 +5,7 @@ import asyncio
 import pytest
 from fakes import ENTRY_DATA
 from homeassistant.core import State
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.util.unit_system import METRIC_SYSTEM
@@ -167,6 +167,33 @@ async def test_turn_off_stops(hass, manager, device):
     await setup(hass, manager)
     await call(hass, "climate", "turn_off", entity_id=FRYER)
     assert [c["method"] for c in device.commands] == ["endCook"]
+
+
+async def test_turn_off_stops_cook_started_since_last_poll(hass, manager, device):
+    await setup(hass, manager)
+    assert hass.states.get(FRYER).state == "off"
+    device.status = "cooking"
+    await call(hass, "climate", "turn_off", entity_id=FRYER)
+    assert [c["method"] for c in device.commands] == ["endCook"]
+
+
+async def test_turn_off_after_cook_ended_since_last_poll(hass, manager, device):
+    device.status = "cooking"
+    await setup(hass, manager)
+    assert hass.states.get(FRYER).state == "heat"
+    device.status = "standby"
+    await call(hass, "climate", "turn_off", entity_id=FRYER)
+    assert not device.commands
+    assert hass.states.get(FRYER).state == "off"
+
+
+async def test_turn_off_refused_by_cloud_raises(hass, manager, device):
+    device.status = "cooking"
+    await setup(hass, manager)
+    device.command_code = 1
+    with pytest.raises(HomeAssistantError) as exc:
+        await call(hass, "climate", "turn_off", entity_id=FRYER)
+    assert exc.value.translation_key == "command_refused"
 
 
 async def test_turn_on_after_preheat_continues(hass, manager, device):
