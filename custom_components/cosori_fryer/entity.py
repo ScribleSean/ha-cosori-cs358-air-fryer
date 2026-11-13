@@ -22,4 +22,5 @@ class FryerEntity(CoordinatorEntity[FryerCoordinator]):
             name=device.device_name,
             manufacturer="Cosori",
             model="CS358-AF",
+            suggested_area="Kitchen",
         )

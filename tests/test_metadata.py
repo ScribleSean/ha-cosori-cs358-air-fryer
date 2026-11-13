@@ -46,7 +46,14 @@ def test_ci_pins_and_history():
     assert any("hacs/action" in action for action in uses)
 
 
-def test_dashboard_preheat_visibility():
-    cards = yaml.safe_load((ROOT / "examples/dashboard.yaml").read_text())["cards"]
-    assert cards[1]["conditions"][0]["state"] == "preheat_end"
-    assert cards[0]["entities"][2]["format"] == "relative"
+def test_dashboard_card_is_built_in():
+    card = yaml.safe_load((ROOT / "examples/dashboard.yaml").read_text())
+    readme = (ROOT / "README.md").read_text()
+    assert card["type"] == "tile"
+    assert card["entity"].startswith("climate.")
+    assert card["features"] == [{"type": "target-temperature"}]
+    attributes = json.loads((COMPONENT / "strings.json").read_text())["entity"]["climate"]["fryer"]
+    for content in card["state_content"]:
+        assert content in attributes["state_attributes"]
+    readme_card = readme.split("```yaml\ntype: tile\n", 1)[1].split("```", 1)[0]
+    assert yaml.safe_load("type: tile\n" + readme_card) == card

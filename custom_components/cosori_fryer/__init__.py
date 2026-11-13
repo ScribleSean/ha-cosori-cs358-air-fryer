@@ -26,11 +26,19 @@ from .manager import FryerManager
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.SENSOR, Platform.BUTTON, Platform.EVENT]
+PLATFORMS = [
+    Platform.BINARY_SENSOR,
+    Platform.BUTTON,
+    Platform.CLIMATE,
+    Platform.EVENT,
+    Platform.NUMBER,
+    Platform.SELECT,
+    Platform.SENSOR,
+]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
-def number(value):
+def finite_number(value):
     """Reject booleans and non-finite values instead of silently coercing them."""
     if isinstance(value, bool):
         raise vol.Invalid("Expected a number")
@@ -73,8 +81,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         start_cook,
         schema=vol.Schema(
             {
-                vol.Required("temperature"): number,
-                vol.Required("minutes"): number,
+                vol.Required("temperature"): finite_number,
+                vol.Required("minutes"): finite_number,
                 vol.Required("preheat"): vol.Boolean(),
                 vol.Optional("temperature_unit"): vol.In(["°F", "°C"]),
                 vol.Optional("config_entry_id"): cv.string,

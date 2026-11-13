@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 from aiohttp import ClientError
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -43,6 +43,17 @@ class FryerData:
     cook_ends_at: datetime | None
     finish: str | None
     finish_sequence: int
+    cook_temp_f: int | None = None
+    time_left: int | None = None
+
+
+@dataclass
+class CookSettings:
+    """What the next Start or Preheat sends. Changing these sends nothing."""
+
+    temperature: int = 350
+    minutes: int = 15
+    preset: str = "custom"
 
 
 type FryerConfigEntry = ConfigEntry[FryerCoordinator]
@@ -65,6 +76,7 @@ class FryerCoordinator(DataUpdateCoordinator[FryerData]):
         self._cycle: str | None = None
         self._finish: str | None = None
         self._sequence = 0
+        self.settings = CookSettings()
 
     async def _async_update_data(self) -> FryerData:
         async with self._lock:
@@ -118,6 +130,12 @@ class FryerCoordinator(DataUpdateCoordinator[FryerData]):
             return end
 
         previous = self.data
+        if status in ("heating", "preheatStop") or (status == "pullOut" and self._cycle == "preheat"):
+            time_left = state.preheat_time_remaining
+        elif status in ("cooking", "cookStop", "pullOut"):
+            time_left = state.cook_time_remaining
+        else:
+            time_left = None
         # Firmware 2.0.06 reports a constant 0 instead of a measurement.
         current_temp = self._celsius(state.current_temp) if reported.get("currentTemp") else None
         return FryerData(
@@ -134,7 +152,16 @@ class FryerCoordinator(DataUpdateCoordinator[FryerData]):
             else None,
             finish=self._finish,
             finish_sequence=self._sequence,
+            cook_temp_f=self._fahrenheit(state.cook_set_temp),
+            time_left=time_left,
         )
+
+    def _fahrenheit(self, value: int | None) -> int | None:
+        if not value:
+            return None
+        if self.device.temp_unit != TemperatureUnits.FAHRENHEIT:
+            value = TemperatureConverter.convert(value, "°C", "°F")
+        return round(value / 10) * 10
 
     def _celsius(self, value: int | None) -> float | None:
         if value is None:
@@ -174,14 +201,55 @@ class FryerCoordinator(DataUpdateCoordinator[FryerData]):
                 raise HomeAssistantError(translation_domain=DOMAIN, translation_key="command_failed") from err
         await self.async_request_refresh()
 
+    @callback
+    def update_settings(self, **changes) -> None:
+        """Change what the next cook sends and refresh the entities that show it."""
+        for key, value in changes.items():
+            setattr(self.settings, key, value)
+        self.async_update_listeners()
+
+    @callback
+    def choose_preset(self, preset: str) -> None:
+        """Pick a fryer program and load its default temperature and time."""
+        if preset == "custom":
+            self.update_settings(preset=preset)
+            return
+        mode = self.device.get_cook_mode(preset)
+        self.update_settings(
+            preset=preset,
+            temperature=mode.default_temp_f,
+            minutes=min(60, max(1, round(mode.cook_time / 60))),
+        )
+
     async def start_cook(self, temperature: int, minutes: int, preheat: bool) -> None:
+        # Kept only once the fryer accepts it, so a refused call leaves the settings alone.
+        settings = CookSettings(temperature=temperature, minutes=minutes)
+        await self.start(preheat, after_preheat=False, settings=settings)
+        self.update_settings(temperature=temperature, minutes=minutes, preset="custom")
+
+    async def start(
+        self, preheat: bool = False, after_preheat: bool = True, settings: CookSettings | None = None
+    ) -> None:
+        """Cook now, preheat first, or continue a finished preheat, with the current settings."""
+
         # A positive value enables preheat. The CS358-AF firmware chooses its duration.
         # Use Fahrenheit for commands so pyvesync validates the device's actual step grid.
-        async def start() -> bool:
+        async def send() -> bool:
+            if not preheat and self.data.status == "preheatEnd":
+                return await self.device.cook_from_preheat()
+            chosen = settings or self.settings
             self.device.temp_unit = TemperatureUnits.FAHRENHEIT
-            return await self.device.set_mode(minutes * 60, temperature, preheat_time=1 if preheat else 0)
+            return await self.device.set_mode(
+                chosen.minutes * 60,
+                chosen.temperature,
+                preheat_time=1 if preheat else 0,
+                cook_mode=None if chosen.preset == "custom" else chosen.preset,
+            )
 
-        await self.command({"standby", "cookEnd"}, start)
+        allowed = {"standby", "cookEnd"}
+        if after_preheat and not preheat:
+            allowed.add("preheatEnd")
+        await self.command(allowed, send, "busy")
 
     async def stop(self) -> None:
         await self.command(
@@ -197,6 +265,3 @@ class FryerCoordinator(DataUpdateCoordinator[FryerData]):
             },
             self.device.end,
         )
-
-    async def start_from_preheat(self) -> None:
-        await self.command({"preheatEnd"}, self.device.cook_from_preheat, "not_preheated")

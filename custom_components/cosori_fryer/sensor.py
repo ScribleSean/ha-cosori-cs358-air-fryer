@@ -1,5 +1,6 @@
 """Status, measured temperatures and phase end timestamps."""
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,7 +11,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfTemperature
+from homeassistant.const import EntityCategory, UnitOfTemperature, UnitOfTime
 
 from .const import STATUS
 from .coordinator import FryerData
@@ -34,17 +35,28 @@ SENSORS = (
         value_fn=lambda d: STATUS.get(d.status),
     ),
     FryerSensorDescription(
+        key="time_left",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        value_fn=lambda d: math.ceil(d.time_left / 60) if d.time_left else 0,
+    ),
+    # Firmware 2.0.06 always reports 0, so this stays off unless a user enables it.
+    FryerSensorDescription(
         key="current_temp",
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         value_fn=lambda d: d.current_temp,
     ),
+    # The thermostat shows the same value; kept for automations built on it.
     FryerSensorDescription(
         key="cook_set_temp",
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
         value_fn=lambda d: d.cook_set_temp,
     ),
     FryerSensorDescription(

@@ -1,21 +1,53 @@
 {
   "entity": {
-    "sensor": {
-      "cook_status": {
-        "default": "mdi:chef-hat"
+    "binary_sensor": {
+      "preheated": {
+        "default": "mdi:circle-outline",
+        "state": {
+          "on": "mdi:check-circle"
+        }
       }
     },
     "button": {
-      "stop": {
-        "default": "mdi:stop"
-      },
       "start": {
         "default": "mdi:play"
+      },
+      "preheat": {
+        "default": "mdi:fire"
+      },
+      "stop": {
+        "default": "mdi:stop"
+      }
+    },
+    "climate": {
+      "fryer": {
+        "default": "mdi:pot-steam",
+        "state": {
+          "off": "mdi:pot-steam-outline"
+        }
       }
     },
     "event": {
       "finished": {
         "default": "mdi:check-circle"
+      }
+    },
+    "number": {
+      "cook_minutes": {
+        "default": "mdi:timer-outline"
+      }
+    },
+    "select": {
+      "preset": {
+        "default": "mdi:silverware-fork-knife"
+      }
+    },
+    "sensor": {
+      "cook_status": {
+        "default": "mdi:chef-hat"
+      },
+      "time_left": {
+        "default": "mdi:timer-sand"
       }
     }
   }

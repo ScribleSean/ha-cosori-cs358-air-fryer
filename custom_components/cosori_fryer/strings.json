@@ -32,6 +32,95 @@
     }
   },
   "entity": {
+    "binary_sensor": {
+      "preheated": {
+        "name": "Preheated"
+      }
+    },
+    "button": {
+      "start": {
+        "name": "Start"
+      },
+      "preheat": {
+        "name": "Preheat"
+      },
+      "stop": {
+        "name": "Stop"
+      }
+    },
+    "climate": {
+      "fryer": {
+        "state": {
+          "off": "Off",
+          "heat": "On"
+        },
+        "state_attributes": {
+          "hvac_action": {
+            "state": {
+              "off": "Off",
+              "idle": "Waiting",
+              "preheating": "Preheating",
+              "heating": "Cooking"
+            }
+          },
+          "cook_status": {
+            "name": "Status",
+            "state": {
+              "starting": "Starting",
+              "standby": "Off",
+              "heating": "Preheating",
+              "preheat_stop": "Preheat paused",
+              "preheat_end": "Preheated",
+              "cooking": "Cooking",
+              "cooking_stop": "Paused",
+              "cooking_end": "Finished",
+              "pull_out": "Basket out",
+              "ready": "Ready",
+              "keeping_warm": "Keeping warm"
+            }
+          },
+          "time_left": {
+            "name": "Time left"
+          }
+        }
+      }
+    },
+    "event": {
+      "finished": {
+        "name": "Finished",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "preheat_finished": "Preheat finished",
+              "cook_finished": "Cook finished"
+            }
+          }
+        }
+      }
+    },
+    "number": {
+      "cook_minutes": {
+        "name": "Cook time"
+      }
+    },
+    "select": {
+      "preset": {
+        "name": "Preset",
+        "state": {
+          "custom": "Manual",
+          "french_fries": "French fries",
+          "frozen": "Frozen",
+          "chicken": "Chicken",
+          "steak": "Steak",
+          "seafood": "Seafood",
+          "shrimp": "Shrimp",
+          "bacon": "Bacon",
+          "vegetables": "Vegetables",
+          "bake": "Bake",
+          "toast": "Toast"
+        }
+      }
+    },
     "sensor": {
       "cook_status": {
         "name": "Cooking status",
@@ -59,36 +148,15 @@
       },
       "cook_ends_at": {
         "name": "Cook ends at"
-      }
-    },
-    "button": {
-      "stop": {
-        "name": "Stop"
       },
-      "start": {
-        "name": "Start cooking"
-      }
-    },
-    "event": {
-      "finished": {
-        "name": "Finished",
-        "state_attributes": {
-          "event_type": {
-            "state": {
-              "preheat_finished": "Preheat finished",
-              "cook_finished": "Cook finished"
-            }
-          }
-        }
+      "time_left": {
+        "name": "Time left"
       }
     }
   },
   "exceptions": {
     "command_refused": {
       "message": "The fryer refused the command in its current state."
-    },
-    "not_preheated": {
-      "message": "Start cooking is only available after preheating has finished."
     },
     "auth_failed": {
       "message": "The VeSync session has expired. Sign in again in the integration settings."
@@ -104,6 +172,12 @@
     },
     "invalid_minutes": {
       "message": "Minutes must be a whole number from 1 to 60."
+    },
+    "busy": {
+      "message": "The fryer is already running. Stop it first."
+    },
+    "running": {
+      "message": "Stop the fryer to change its temperature."
     }
   },
   "services": {

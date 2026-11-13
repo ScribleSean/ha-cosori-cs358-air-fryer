@@ -1,24 +1,14 @@
-# Replace entity IDs with the ones from your installation.
-type: vertical-stack
-cards:
-  - type: entities
-    entities:
-      - sensor.air_fryer_cooking_status
-      - sensor.air_fryer_target_temperature
-      - entity: sensor.air_fryer_preheat_ends_at
-        format: relative
-      - entity: sensor.air_fryer_cook_ends_at
-        format: relative
-      - button.air_fryer_stop
-  - type: conditional
-    conditions:
-      - entity: sensor.air_fryer_cooking_status
-        state: preheat_end
-    card:
-      type: button
-      entity: button.air_fryer_start_cooking
-      tap_action:
-        action: perform-action
-        perform_action: button.press
-        target:
-          entity_id: button.air_fryer_start_cooking
+# A tile for a sections dashboard. Tap the icon to start or stop; use − and + to set the temperature.
+# Replace the entity ID if yours is different.
+type: tile
+entity: climate.kitchen_air_fryer
+state_content:
+  - cook_status
+  - time_left
+icon_tap_action:
+  action: toggle
+features_position: inline
+features:
+  - type: target-temperature
+grid_options:
+  columns: 12

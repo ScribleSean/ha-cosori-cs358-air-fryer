@@ -17,3 +17,19 @@ STATUS = {
     "ready": "ready",
     "keeping_warm": "keeping_warm",
 }
+# Program keys in the order the fryer lists them; "custom" is the manual program.
+PRESETS = [
+    "custom",
+    "french_fries",
+    "frozen",
+    "chicken",
+    "steak",
+    "seafood",
+    "shrimp",
+    "bacon",
+    "vegetables",
+    "bake",
+    "toast",
+]
+# Phases in which nothing is running and a new cook can start.
+IDLE = ("standby", "cookEnd")

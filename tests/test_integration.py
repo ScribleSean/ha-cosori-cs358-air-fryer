@@ -39,10 +39,17 @@ async def start(hass, **changes):
 async def test_setup(hass, manager, caplog):
     entry = await setup(hass, manager)
     assert entry.state is ConfigEntryState.LOADED
-    assert len(hass.states.async_all("sensor")) == 4
-    assert len(hass.states.async_all("button")) == 2
-    assert len(hass.states.async_all("event")) == 1
-    assert not hass.states.async_all("number")
+    counts = {
+        "sensor": 4,
+        "button": 3,
+        "event": 1,
+        "climate": 1,
+        "number": 1,
+        "select": 1,
+        "binary_sensor": 1,
+    }
+    for domain, count in counts.items():
+        assert len(hass.states.async_all(domain)) == count, domain
     assert not manager.login.called
     assert not [record for record in caplog.records if record.levelno >= 40]
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -103,11 +110,9 @@ async def test_reauth(hass, manager):
 async def test_entities_every_state(hass, manager, device, status):
     device.status = "keeping" if status == "keeping_warm" else status
     entry = await setup(hass, manager)
-    assert hass.states.get("sensor.air_fryer_cooking_status").state == STATUS[status]
+    assert hass.states.get("sensor.kitchen_air_fryer_cooking_status").state == STATUS[status]
     for entity in hass.states.async_all():
-        if entity.domain in ("sensor", "button", "event"):
-            assert entity.state != "unavailable"
-    assert "can_start" not in hass.states.get("button.air_fryer_start_cooking").attributes
+        assert entity.state != "unavailable"
     data = entry.runtime_data.data
     assert (data.preheat_ends_at is not None) == (status == "heating")
     assert (data.cook_ends_at is not None) == (status == "cooking")
@@ -120,7 +125,7 @@ async def test_phase_timestamps(hass, manager, device):
     device.status = "heating"
     entry = await setup(hass, manager)
     await refresh(hass, entry)
-    sensor = hass.states.get("sensor.air_fryer_preheat_ends_at")
+    sensor = hass.states.get("sensor.kitchen_air_fryer_preheat_ends_at")
     assert sensor.attributes["device_class"] == "timestamp"
     assert (dt_util.parse_datetime(sensor.state) - dt_util.utcnow()).total_seconds() == pytest.approx(
         240, abs=2
@@ -131,7 +136,7 @@ async def test_phase_timestamps(hass, manager, device):
     assert (entry.runtime_data.data.cook_ends_at - dt_util.utcnow()).total_seconds() == pytest.approx(
         600, abs=2
     )
-    assert hass.states.get("sensor.air_fryer_cook_ends_at").attributes["device_class"] == "timestamp"
+    assert hass.states.get("sensor.kitchen_air_fryer_cook_ends_at").attributes["device_class"] == "timestamp"
 
 
 async def test_current_temperature_zero_is_unknown_and_hidden(hass, manager, device):
@@ -140,9 +145,9 @@ async def test_current_temperature_zero_is_unknown_and_hidden(hass, manager, dev
     device.current_temp = 0
     entry = await setup(hass, manager)
     assert entry.runtime_data.data.current_temp is None
-    assert hass.states.get("sensor.air_fryer_current_temperature") is None
+    assert hass.states.get("sensor.kitchen_air_fryer_current_temperature") is None
     registry = er.async_get(hass)
-    assert registry.async_get("sensor.air_fryer_current_temperature").disabled_by is not None
+    assert registry.async_get("sensor.kitchen_air_fryer_current_temperature").disabled_by is not None
     device.current_temp = 150
     await refresh(hass, entry)
     assert entry.runtime_data.data.current_temp == pytest.approx(150)
@@ -161,28 +166,28 @@ async def test_preheat_then_start_keeps_temperature_and_time(hass, manager, devi
         "preheatTemp": 400,
         "shakeTime": 0,
     }
-    target = "sensor.air_fryer_target_temperature"
+    target = "climate.kitchen_air_fryer"
     for raw in ("heating", "preheatEnd"):
         device.status = raw
         await refresh(hass, entry)
-        assert float(hass.states.get(target).state) == pytest.approx(400)
+        assert hass.states.get(target).attributes["temperature"] == 400
         assert entry.runtime_data.data.cook_ends_at is None
     # Waiting at preheatEnd sends nothing on its own, however long it lasts.
     freezer.tick(timedelta(minutes=5))
     await refresh(hass, entry)
     assert len(device.commands) == 1
     await hass.services.async_call(
-        "button", "press", {"entity_id": "button.air_fryer_start_cooking"}, blocking=True
+        "button", "press", {"entity_id": "button.kitchen_air_fryer_start"}, blocking=True
     )
     assert device.commands[1]["method"] == "preheatCook"
     assert device.commands[1]["data"] == {}
     device.status = "cooking"
     await refresh(hass, entry)
-    assert float(hass.states.get(target).state) == pytest.approx(400)
+    assert hass.states.get(target).attributes["temperature"] == 400
     assert (entry.runtime_data.data.cook_ends_at - dt_util.utcnow()).total_seconds() == pytest.approx(
         720, abs=2
     )
-    assert hass.states.get("event.air_fryer_finished").attributes["event_type"] == "preheat_finished"
+    assert hass.states.get("event.kitchen_air_fryer_finished").attributes["event_type"] == "preheat_finished"
 
 
 async def test_start_350_ten_minutes(hass, manager, device):
@@ -259,31 +264,30 @@ async def test_without_preheat(hass, manager, device):
 
 
 @pytest.mark.parametrize(
-    "button,status,method", [("stop", "cooking", "end"), ("start_cooking", "preheatEnd", "cook_from_preheat")]
+    "button,status,method", [("stop", "cooking", "end"), ("start", "preheatEnd", "cook_from_preheat")]
 )
 async def test_buttons(hass, manager, device, button, status, method):
     device.status = status
     await setup(hass, manager)
     await hass.services.async_call(
-        "button", "press", {"entity_id": f"button.air_fryer_{button}"}, blocking=True
+        "button", "press", {"entity_id": f"button.kitchen_air_fryer_{button}"}, blocking=True
     )
     assert [c["method"] for c in device.commands] == [
         "preheatCook" if method == "cook_from_preheat" else "endCook"
     ]
 
 
-@pytest.mark.parametrize(
-    "status", ["standby", "heating", "cooking", "cookStop", "cookEnd", "pullOut", "ready"]
-)
-async def test_start_button_refused(hass, manager, device, status):
+@pytest.mark.parametrize("button", ["start", "preheat"])
+@pytest.mark.parametrize("status", ["heating", "cooking", "cookStop", "pullOut", "ready"])
+async def test_start_button_refused(hass, manager, device, status, button):
     device.status = status
     await setup(hass, manager)
     with pytest.raises(ServiceValidationError) as exc:
         await hass.services.async_call(
-            "button", "press", {"entity_id": "button.air_fryer_start_cooking"}, blocking=True
+            "button", "press", {"entity_id": f"button.kitchen_air_fryer_{button}"}, blocking=True
         )
-    assert exc.value.translation_key == "not_preheated"
-    assert hass.states.get("button.air_fryer_start_cooking").state != "unavailable"
+    assert exc.value.translation_key == "busy"
+    assert hass.states.get(f"button.kitchen_air_fryer_{button}").state != "unavailable"
     assert not device.commands
 
 
@@ -295,10 +299,10 @@ async def test_busy_and_refused_commands_stay_available(hass, manager, device):
     device.command_code = 1
     with pytest.raises(HomeAssistantError) as exc:
         await hass.services.async_call(
-            "button", "press", {"entity_id": "button.air_fryer_stop"}, blocking=True
+            "button", "press", {"entity_id": "button.kitchen_air_fryer_stop"}, blocking=True
         )
     assert exc.value.translation_key == "command_refused"
-    assert hass.states.get("sensor.air_fryer_cooking_status").state == "cooking"
+    assert hass.states.get("sensor.kitchen_air_fryer_cooking_status").state == "cooking"
 
 
 @pytest.mark.parametrize("error", [VeSyncTokenError("expired"), VeSyncLoginError("expired")])
@@ -330,12 +334,12 @@ async def test_read_failure_and_recovery_within_two_minutes(hass, manager, devic
     async_fire_time_changed(hass, dt_util.utcnow())
     await hass.async_block_till_done()
     assert not entry.runtime_data.last_update_success
-    assert hass.states.get("sensor.air_fryer_cooking_status").state == "unavailable"
+    assert hass.states.get("sensor.kitchen_air_fryer_cooking_status").state == "unavailable"
     device.error = None
     freezer.tick(timedelta(seconds=61))
     async_fire_time_changed(hass, dt_util.utcnow())
     await hass.async_block_till_done()
-    assert hass.states.get("sensor.air_fryer_cooking_status").state == "standby"
+    assert hass.states.get("sensor.kitchen_air_fryer_cooking_status").state == "standby"
 
 
 @pytest.mark.parametrize(
@@ -349,7 +353,7 @@ async def test_finish_once(hass, manager, device, running, finished, event_type)
     await refresh(hass, entry)
     device.status = finished
     await refresh(hass, entry)
-    entity = hass.states.get("event.air_fryer_finished")
+    entity = hass.states.get("event.kitchen_air_fryer_finished")
     assert entity.attributes["event_type"] == event_type
     timestamp = entity.state
     await refresh(hass, entry)
@@ -362,7 +366,7 @@ async def test_event_entity_writes_event_type(hass, manager, device):
     entry = await setup(hass, manager)
     device.status = "cookEnd"
     await refresh(hass, entry)
-    entity = hass.states.get("event.air_fryer_finished")
+    entity = hass.states.get("event.kitchen_air_fryer_finished")
     assert entity.attributes["event_type"] == "cook_finished"
     timestamp = entity.state
     await refresh(hass, entry)
@@ -372,7 +376,7 @@ async def test_event_entity_writes_event_type(hass, manager, device):
 async def test_finish_at_startup_not_announced(hass, manager, device):
     device.status = "cookEnd"
     await setup(hass, manager)
-    assert hass.states.get("event.air_fryer_finished").state == "unknown"
+    assert hass.states.get("event.kitchen_air_fryer_finished").state == "unknown"
 
 
 async def test_diagnostics(hass, manager, device):
@@ -444,7 +448,7 @@ async def test_setup_expired_session_never_logs_in(hass, manager):
 async def test_timestamp_is_stable_between_polls(hass, manager, device, freezer):
     device.status = "cooking"
     await setup(hass, manager)
-    entity = hass.states.get("sensor.air_fryer_cook_ends_at")
+    entity = hass.states.get("sensor.kitchen_air_fryer_cook_ends_at")
     end = dt_util.parse_datetime(entity.state)
     before = (end - dt_util.utcnow()).total_seconds()
     freezer.tick(timedelta(seconds=5))
@@ -472,17 +476,17 @@ async def test_command_inner_refusal(hass, manager, device):
     with pytest.raises(HomeAssistantError) as exc:
         await start(hass)
     assert exc.value.translation_key == "command_refused"
-    assert hass.states.get("sensor.air_fryer_cooking_status").state == "standby"
+    assert hass.states.get("sensor.kitchen_air_fryer_cooking_status").state == "standby"
 
 
 async def test_failed_read_response_unavailable(hass, manager, device):
     entry = await setup(hass, manager)
     device.response_code = 1
     await refresh(hass, entry)
-    assert hass.states.get("sensor.air_fryer_cooking_status").state == "unavailable"
+    assert hass.states.get("sensor.kitchen_air_fryer_cooking_status").state == "unavailable"
     device.response_code = 0
     await refresh(hass, entry)
-    assert hass.states.get("sensor.air_fryer_cooking_status").state == "standby"
+    assert hass.states.get("sensor.kitchen_air_fryer_cooking_status").state == "standby"
 
 
 async def test_action_rejects_unloaded_entry(hass, manager):
@@ -508,7 +512,7 @@ async def test_malformed_saved_response_is_read_failure(hass, manager, device):
     entry = await setup(hass, manager)
     device.malformed = True
     await refresh(hass, entry)
-    assert hass.states.get("sensor.air_fryer_cooking_status").state == "unavailable"
+    assert hass.states.get("sensor.kitchen_air_fryer_cooking_status").state == "unavailable"
 
 
 @pytest.mark.parametrize("error", [TimeoutError(), ValueError("invalid response")])
@@ -521,14 +525,13 @@ async def test_failed_read_during_command_marks_entities_unavailable(hass, manag
     assert exc.value.translation_key == "command_failed"
     assert not device.commands
     for entity in hass.states.async_all():
-        if entity.domain in ("sensor", "button", "event"):
-            assert entity.state == "unavailable"
+        assert entity.state == "unavailable", entity.entity_id
 
 
 async def test_keep_warm_sequence(hass, manager, device, freezer):
     device.status = "cooking"
     entry = await setup(hass, manager)
-    event_id = "event.air_fryer_finished"
+    event_id = "event.kitchen_air_fryer_finished"
     for raw, expected in [
         ("cookStop", "cooking_stop"),
         ("pullOut", "pull_out"),
@@ -537,7 +540,7 @@ async def test_keep_warm_sequence(hass, manager, device, freezer):
     ]:
         device.status = raw
         await refresh(hass, entry)
-        assert hass.states.get("sensor.air_fryer_cooking_status").state == expected
+        assert hass.states.get("sensor.kitchen_air_fryer_cooking_status").state == expected
         assert hass.states.get(event_id).state == "unknown"
         if raw == "keeping":
             assert entry.runtime_data.data.cook_ends_at is None
@@ -554,8 +557,8 @@ async def test_keep_warm_sequence(hass, manager, device, freezer):
 @pytest.mark.parametrize(
     "phase,entity_id,remaining",
     [
-        ("heating", "sensor.air_fryer_preheat_ends_at", "preheat_remaining"),
-        ("cooking", "sensor.air_fryer_cook_ends_at", "cook_remaining"),
+        ("heating", "sensor.kitchen_air_fryer_preheat_ends_at", "preheat_remaining"),
+        ("cooking", "sensor.kitchen_air_fryer_cook_ends_at", "cook_remaining"),
     ],
 )
 async def test_timestamp_poll_jitter(hass, manager, device, freezer, phase, entity_id, remaining):
@@ -587,7 +590,6 @@ async def test_migrate_v1_entry(hass, manager, v1_entry):
     stale = [
         ("number", "cook_temperature"),
         ("number", "cook_time"),
-        ("button", "preheat"),
         ("sensor", "cook_set_time"),
         ("sensor", "preheat_set_time"),
         ("sensor", "remaining_time"),
