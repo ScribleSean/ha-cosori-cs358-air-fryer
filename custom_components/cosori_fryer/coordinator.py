@@ -398,6 +398,10 @@ class FryerCoordinator(DataUpdateCoordinator[FryerData]):
         try:
             await self.command(lambda data: data.held, self.device.end)
         except ServiceValidationError:
+            if self.data.status == "pullOut":
+                # The basket is out, so the hold may come back: look again in a minute.
+                self._retry_hold_limit()
+                return
             # Read fine and nothing is holding: a cook replaced it or it was stopped.
             self._clear_hold_limit()
         except HomeAssistantError as err:

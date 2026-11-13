@@ -265,6 +265,32 @@ async def test_keep_warm_refused_during_cook(hass, manager, device, status):
     assert not device.commands
 
 
+async def test_off_during_start_delay_stops_cook_started_since_last_poll(hass, manager, device, monkeypatch):
+    monkeypatch.setattr(climate, "START_DELAY", 0.05)
+    await setup(hass, manager)
+    device.status = "cooking"
+    mode = hass.async_create_task(
+        hass.services.async_call("climate", "set_hvac_mode", {"entity_id": FRYER, "hvac_mode": "heat"}, True)
+    )
+    await asyncio.sleep(0)
+    await call(hass, "climate", "turn_off", entity_id=FRYER)
+    await mode
+    assert [c["method"] for c in device.commands] == ["endCook"]
+    assert hass.states.get(FRYER).state == "off"
+
+
+async def test_hold_limit_with_basket_out_stops_once_it_is_back(hass, manager, device):
+    entry = await setup(hass, manager)
+    await call(hass, "climate", "turn_on", entity_id=FRYER)
+    device.status = "pullOut"
+    await later(hass, HOLD_LIMIT_MIN + 1)
+    assert [c["method"] for c in device.commands] == ["startCook"]
+    device.status = "preheatEnd"
+    await refresh(hass, entry)
+    await later(hass, 2)
+    assert [c["method"] for c in device.commands] == ["startCook", "endCook"]
+
+
 async def test_off_during_start_delay_sends_nothing(hass, manager, device, monkeypatch):
     monkeypatch.setattr(climate, "START_DELAY", 0.05)
     await setup(hass, manager)

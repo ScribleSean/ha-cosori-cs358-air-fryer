@@ -145,9 +145,9 @@ class FryerClimate(FryerEntity, ClimateEntity, RestoreEntity):
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         if hvac_mode == HVACMode.OFF:
             if self._starting:
+                # Cancel the start that has not been sent, then still ask the fryer.
                 self._starting = False
                 self.async_write_ha_state()
-                return
             if self._sending is not None:
                 # The start is already on its way; stop once it lands.
                 await self._sending.wait()
