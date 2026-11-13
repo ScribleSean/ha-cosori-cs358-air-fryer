@@ -15,6 +15,9 @@
       "preheat": {
         "default": "mdi:fire"
       },
+      "keep_warm": {
+        "default": "mdi:heat-wave"
+      },
       "stop": {
         "default": "mdi:stop"
       }
@@ -49,6 +52,17 @@
       "time_left": {
         "default": "mdi:timer-sand"
       }
+    }
+  },
+  "services": {
+    "cook": {
+      "service": "mdi:pot-steam"
+    },
+    "keep_warm": {
+      "service": "mdi:heat-wave"
+    },
+    "start_cook": {
+      "service": "mdi:play"
     }
   }
 }

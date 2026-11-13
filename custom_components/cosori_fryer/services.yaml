@@ -1,3 +1,45 @@
+cook:
+  fields:
+    temperature:
+      required: true
+      example: 350
+      selector:
+        number:
+          mode: box
+    minutes:
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 60
+          mode: box
+    preheat:
+      default: false
+      selector:
+        boolean:
+    temperature_unit:
+      selector:
+        select:
+          options:
+            - "°F"
+            - "°C"
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: cosori_fryer
+keep_warm:
+  fields:
+    minutes:
+      example: 15
+      selector:
+        number:
+          min: 1
+          max: 60
+          mode: box
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: cosori_fryer
 start_cook:
   fields:
     temperature:
@@ -14,7 +56,7 @@ start_cook:
           max: 60
           mode: box
     preheat:
-      required: true
+      default: false
       selector:
         boolean:
     temperature_unit:

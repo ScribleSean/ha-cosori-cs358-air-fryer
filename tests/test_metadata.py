@@ -26,9 +26,23 @@ def test_metadata():
 
 
 def test_service_contract():
-    fields = yaml.safe_load((COMPONENT / "services.yaml").read_text())["start_cook"]["fields"]
-    for field in ("temperature", "minutes", "preheat"):
-        assert fields[field]["required"]
+    services = yaml.safe_load((COMPONENT / "services.yaml").read_text())
+    strings = json.loads((COMPONENT / "strings.json").read_text())["services"]
+    icons = json.loads((COMPONENT / "icons.json").read_text())["services"]
+    assert set(services) == set(strings) == set(icons) == {"cook", "keep_warm", "start_cook"}
+    # start_cook is an alias of cook, kept for 0.7 automations.
+    assert services["start_cook"] == services["cook"]
+    for field in ("temperature", "minutes"):
+        assert services["cook"]["fields"][field]["required"]
+    assert not services["cook"]["fields"]["preheat"].get("required")
+    assert not services["keep_warm"]["fields"]["minutes"].get("required")
+    for name, service in services.items():
+        assert set(service["fields"]) == set(strings[name]["fields"])
+
+
+def test_version():
+    manifest = json.loads((COMPONENT / "manifest.json").read_text())
+    assert manifest["version"] == "0.8.0"
 
 
 def test_ci_pins_and_history():

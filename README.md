@@ -22,16 +22,17 @@ VeSync allows one sign-in per account, so signing in here signs the phone app ou
 
 | Entity | What it does |
 | --- | --- |
-| Air fryer | Off or On, the temperature (170–400 °F in 10 °F steps), and what it's doing: Preheating, Preheated, Cooking, Paused, Finished. Turning it on cooks at that temperature for the cook time. |
+| Air fryer | Off or On, the temperature (170–400 °F in 10 °F steps), and what it's doing: Preheating, Preheated, Cooking, Paused, Finished. Turning it on preheats to the set temperature and holds until you start a cook or stop it. A hold with no cook stops itself after 30 minutes. |
 | Preset | Manual or one of the fryer's programs (French fries, Chicken, Steak and more). A program fills in its temperature and time. |
 | Cook time | Minutes for the next cook, 1–60 |
-| Start, Preheat, Stop | Start cooks now, or continues after a preheat. Preheat heats first and waits for the food. Stop ends either. |
+| Start, Preheat, Stop | Start cooks now at the set temperature and cook time, or continues after a preheat. Preheat heats to the set temperature and holds, like turning it on. Stop ends anything. |
+| Keep warm | Holds food at 170 °F for 15 minutes. Replaces a hold; refused while cooking. |
 | Time left | Minutes left in the preheat or the cook |
 | Preheated | On while the fryer is hot and waiting for the food |
 | Cooking status, Preheat ends at, Cook ends at | For automations |
 | Finished | An event when a preheat or a cook finishes |
 
-Changing the temperature, preset or cook time sends nothing to the fryer until you start it. The temperature can't be changed mid-cook; stop first. The integration sends no notifications. The Current temperature sensor is off by default, because this fryer's firmware always reports 0.
+Changing the temperature, preset or cook time sends nothing to the fryer until you start it, except during a hold, where a new temperature moves the hold. The temperature can't be changed mid-cook; stop first. The integration sends no notifications. The Current temperature sensor is off by default, because this fryer's firmware always reports 0.
 
 ## Add to your dashboard
 
@@ -66,19 +67,19 @@ Without a bridge yet, add the **HomeKit Bridge** integration, choose the **Clima
 
 Siri then understands:
 
-- "Turn on the air fryer" (cooks at the set temperature for the set time)
-- "Set the air fryer to 360 degrees"
-- "Turn off the air fryer"
+- "Turn on the air fryer" (preheats to the set temperature and holds ready)
+- "Set the air fryer to 400 degrees" (preheats to 400 and holds; on the dashboard, a new temperature while off is only saved)
+- "Turn off the air fryer" (stops anything, including keep warm)
 - "What's the air fryer set to?"
 
-Turning it on from Apple Home or Siri starts heating right away, with no confirmation. Apple Home shows a room temperature of about 70 °F for the fryer, because HomeKit requires one and the fryer doesn't report it.
+Apple Home sees only a thermostat, so cooking for a time and keeping warm are on the dashboard buttons, or the `cook` and `keep_warm` actions below. Turning it on from Apple Home or Siri starts heating right away, with no confirmation. Apple Home shows a room temperature of about 70 °F for the fryer, because HomeKit requires one and the fryer doesn't report it.
 
-## Start a cook from an automation
+## Cook or keep warm from an automation
 
-Use the **Cosori air fryer: Start cook** action from a script, an automation, or **Developer tools → Actions**:
+Use the **Cosori air fryer: Cook** action from a script, an automation, or **Developer tools → Actions**:
 
 ```yaml
-action: cosori_fryer.start_cook
+action: cosori_fryer.cook
 data:
   temperature: 400
   temperature_unit: "°F"
@@ -86,9 +87,19 @@ data:
   preheat: true
 ```
 
-With `preheat: true` the fryer heats to the temperature, shows **Preheated**, and waits. Put the food in and press **Start**: it cooks at the same temperature for the time you gave, with nothing to enter again. With `preheat: false` it cooks at once.
+With `preheat: true` the fryer heats to the temperature, shows **Preheated**, and waits. Put the food in and press **Start**: it cooks at the same temperature for the time you gave, with nothing to enter again. Without `preheat` it cooks at once. A cook replaces a hold, and is refused while another cook runs or waits.
 
-Temperature is 170–400 °F in 10 °F steps, and time is 1–60 whole minutes. A Celsius value is rounded to the nearest 10 °F step, so 180 °C sends 360 °F. Without `temperature_unit`, the Home Assistant unit is used.
+Temperature moves to the nearest 10 °F step from 170 to 400 °F, so 375 °F sends 370 °F, 405 °F sends 400 °F and 180 °C sends 360 °F; anything more than 5 °F outside that range is refused. Time is 1–60 minutes and a fraction rounds up; over 60 is refused. Without `temperature_unit`, the Home Assistant unit is used.
+
+To keep food warm at 170 °F:
+
+```yaml
+action: cosori_fryer.keep_warm
+data:
+  minutes: 20
+```
+
+Without `minutes` it keeps warm for 15 minutes; over 60 is cut to 60.
 
 For a Siri Shortcut that asks before it starts, see [examples/siri.md](examples/siri.md).
 
@@ -99,6 +110,7 @@ For a Siri Shortcut that asks before it starts, see [examples/siri.md](examples/
 - The fryer chooses how long a preheat takes.
 - A program paused on the fryer can only be resumed on the fryer.
 - Upgrading from 0.4 or older asks you to sign in once.
+- Upgrading from 0.7: turning the fryer on now preheats and holds instead of starting a cook. Use Start or the Cook action to cook; older automations keep working.
 - Upgrading from 0.6 keeps your entity IDs and area. The Start cooking button is now Start, and it also starts a cook when the fryer is off.
 - A copy of pyvesync is bundled until a pyvesync release supports this model.
 

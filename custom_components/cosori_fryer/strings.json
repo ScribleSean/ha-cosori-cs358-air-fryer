@@ -44,6 +44,9 @@
       "preheat": {
         "name": "Preheat"
       },
+      "keep_warm": {
+        "name": "Keep warm"
+      },
       "stop": {
         "name": "Stop"
       }
@@ -167,35 +170,72 @@
     "choose_account": {
       "message": "Select exactly one loaded Cosori config entry."
     },
-    "invalid_temperature": {
-      "message": "Temperature must be 170–400 °F in 10 °F steps. °C is rounded to the nearest step."
-    },
-    "invalid_minutes": {
-      "message": "Minutes must be a whole number from 1 to 60."
-    },
     "busy": {
-      "message": "The fryer is already running. Stop it first."
+      "message": "The fryer is busy with a cook. Stop it first."
     },
     "running": {
       "message": "Stop the fryer to change its temperature."
+    },
+    "invalid_request": {
+      "message": "The fryer can't run that: {reason}"
     }
   },
   "services": {
-    "start_cook": {
-      "name": "Start cook",
-      "description": "Start a cook at a set temperature and time.",
+    "cook": {
+      "name": "Cook",
+      "description": "Cook at a temperature for a time. Replaces a preheat that is holding.",
       "fields": {
         "temperature": {
           "name": "Temperature",
-          "description": "170–400 °F in 10 °F steps. °C is rounded to the nearest step."
+          "description": "170–400 °F, rounded to the nearest 10 °F step."
         },
         "minutes": {
           "name": "Minutes",
-          "description": "1 to 60."
+          "description": "1 to 60. Fractions round up."
         },
         "preheat": {
           "name": "Preheat",
-          "description": "Preheat first, then wait for Start cooking."
+          "description": "Preheat first, then wait for Start. Off by default."
+        },
+        "temperature_unit": {
+          "name": "Temperature unit",
+          "description": "Defaults to the Home Assistant unit."
+        },
+        "config_entry_id": {
+          "name": "Account",
+          "description": "Only needed with more than one account."
+        }
+      }
+    },
+    "keep_warm": {
+      "name": "Keep warm",
+      "description": "Keep food warm at 170 °F. Replaces a preheat that is holding.",
+      "fields": {
+        "minutes": {
+          "name": "Minutes",
+          "description": "Defaults to 15. Over 60 is capped at 60."
+        },
+        "config_entry_id": {
+          "name": "Account",
+          "description": "Only needed with more than one account."
+        }
+      }
+    },
+    "start_cook": {
+      "name": "Start cook",
+      "description": "Same as Cook. Kept for older automations.",
+      "fields": {
+        "temperature": {
+          "name": "Temperature",
+          "description": "170–400 °F, rounded to the nearest 10 °F step."
+        },
+        "minutes": {
+          "name": "Minutes",
+          "description": "1 to 60. Fractions round up."
+        },
+        "preheat": {
+          "name": "Preheat",
+          "description": "Preheat first, then wait for Start. Off by default."
         },
         "temperature_unit": {
           "name": "Temperature unit",

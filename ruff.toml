@@ -2,7 +2,8 @@ target-version = "py314"
 line-length = 110
 
 [lint]
-exclude = ["custom_components/cosori_fryer/_vendor/**"]
+# planner.py is a byte-identical copy of a shared module; keep it untouched.
+exclude = ["custom_components/cosori_fryer/_vendor/**", "custom_components/cosori_fryer/planner.py"]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "S", "SLF"]
 ignore = ["E501"]
 
@@ -11,4 +12,4 @@ ignore = ["E501"]
 
 # Preserve the upstream source apart from deterministic import rewriting.
 [format]
-exclude = ["custom_components/cosori_fryer/_vendor/**"]
+exclude = ["custom_components/cosori_fryer/_vendor/**", "custom_components/cosori_fryer/planner.py"]

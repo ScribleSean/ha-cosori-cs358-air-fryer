@@ -1,6 +1,8 @@
 """The thermostat-style entity, the cook settings and the Kitchen suggestion."""
 
 import asyncio
+from dataclasses import replace
+from datetime import timedelta
 
 import pytest
 from fakes import ENTRY_DATA
@@ -8,12 +10,18 @@ from homeassistant.core import State
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
+from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_system import METRIC_SYSTEM
-from pytest_homeassistant_custom_component.common import MockConfigEntry, mock_restore_cache_with_extra_data
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+    mock_restore_cache_with_extra_data,
+)
 from test_integration import refresh, setup
 
-from custom_components.cosori_fryer import climate
+from custom_components.cosori_fryer import climate, coordinator
 from custom_components.cosori_fryer.const import DOMAIN, PRESETS
+from custom_components.cosori_fryer.planner import HOLD_LIMIT_MIN, HOLD_STEP_SECONDS
 
 FRYER = "climate.kitchen_air_fryer"
 
@@ -21,10 +29,16 @@ FRYER = "climate.kitchen_air_fryer"
 @pytest.fixture(autouse=True)
 def no_start_delay(monkeypatch):
     monkeypatch.setattr(climate, "START_DELAY", 0)
+    monkeypatch.setattr(coordinator, "CLEAR_DELAY", 0)
 
 
 async def call(hass, domain, service, **data):
     await hass.services.async_call(domain, service, data, blocking=True)
+
+
+async def later(hass, minutes):
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=minutes))
+    await hass.async_block_till_done()
 
 
 async def test_device_suggests_kitchen(hass, manager):
@@ -57,25 +71,48 @@ async def test_set_temperature_while_off_sends_nothing(hass, manager, device):
     assert not device.commands
 
 
-async def test_turn_on_cooks_with_settings(hass, manager, device):
-    await setup(hass, manager)
+def assert_hold(sent, temperature):
+    """A hold is a preheat with the short placeholder cook step behind it."""
+    assert sent["method"] == "startCook"
+    assert sent["data"]["hasPreheat"] == 1
+    assert sent["data"]["startAct"]["cookTemp"] == temperature
+    assert sent["data"]["startAct"]["preheatTemp"] == temperature
+    assert sent["data"]["startAct"]["cookSetTime"] == HOLD_STEP_SECONDS
+
+
+def assert_plain_cook(sent, temperature, seconds):
+    assert sent["method"] == "startCook"
+    assert not sent["data"].get("hasPreheat")
+    assert sent["data"]["startAct"]["preheatTemp"] == 0
+    assert (sent["data"]["startAct"]["cookTemp"], sent["data"]["startAct"]["cookSetTime"]) == (
+        temperature,
+        seconds,
+    )
+
+
+async def test_turn_on_preheats_and_holds(hass, manager, device):
+    entry = await setup(hass, manager)
     await call(hass, "climate", "set_temperature", entity_id=FRYER, temperature=380)
     await call(hass, "number", "set_value", entity_id="number.kitchen_air_fryer_cook_time", value=7)
     await call(hass, "climate", "turn_on", entity_id=FRYER)
-    sent = device.commands[0]
-    assert sent["method"] == "startCook"
-    assert sent["data"]["hasPreheat"] == 0
-    assert sent["data"]["startAct"]["cookTemp"] == 380
-    assert sent["data"]["startAct"]["cookSetTime"] == 420
+    (sent,) = device.commands
+    # The cook time is for a cook, not for a hold.
+    assert_hold(sent, 380)
+    assert entry.runtime_data.data.held
+    state = hass.states.get(FRYER)
+    assert state.state == "heat"
+    assert state.attributes["hvac_action"] == "preheating"
+    assert state.attributes["temperature"] == 380
 
 
-async def test_set_temperature_with_mode_cooks_at_new_temperature(hass, manager, device):
+async def test_set_temperature_with_mode_holds_at_new_temperature(hass, manager, device):
     await setup(hass, manager)
     await call(hass, "climate", "set_temperature", entity_id=FRYER, temperature=390, hvac_mode="heat")
-    assert device.commands[0]["data"]["startAct"]["cookTemp"] == 390
+    (sent,) = device.commands
+    assert_hold(sent, 390)
 
 
-async def test_homekit_mode_then_temperature_cooks_at_new_temperature(hass, manager, device, monkeypatch):
+async def test_homekit_mode_then_temperature_holds_at_new_temperature(hass, manager, device, monkeypatch):
     """HomeKit sends the mode first, then the temperature, as separate calls."""
     monkeypatch.setattr(climate, "START_DELAY", 0.05)
     await setup(hass, manager)
@@ -87,8 +124,145 @@ async def test_homekit_mode_then_temperature_cooks_at_new_temperature(hass, mana
     assert hass.states.get(FRYER).attributes["cook_status"] == "starting"
     await call(hass, "climate", "set_temperature", entity_id=FRYER, temperature=360)
     await mode
+    (sent,) = device.commands
+    assert_hold(sent, 360)
+
+
+@pytest.mark.parametrize("status", ["heating", "preheatEnd"])
+async def test_turn_on_during_hold_sends_nothing(hass, manager, device, status):
+    entry = await setup(hass, manager)
+    await call(hass, "climate", "turn_on", entity_id=FRYER)
+    device.status = status
+    await refresh(hass, entry)
+    assert entry.runtime_data.data.held
+    await call(hass, "climate", "turn_on", entity_id=FRYER)
+    await call(hass, "climate", "set_temperature", entity_id=FRYER, temperature=350, hvac_mode="heat")
     assert len(device.commands) == 1
-    assert device.commands[0]["data"]["startAct"]["cookTemp"] == 360
+
+
+@pytest.mark.parametrize("hvac_mode", [None, "heat"])
+async def test_set_temperature_during_hold_moves_it(hass, manager, device, hvac_mode):
+    entry = await setup(hass, manager)
+    await call(hass, "climate", "turn_on", entity_id=FRYER)
+    extra = {"hvac_mode": hvac_mode} if hvac_mode else {}
+    await call(hass, "climate", "set_temperature", entity_id=FRYER, temperature=400, **extra)
+    assert [c["method"] for c in device.commands] == ["startCook", "endCook", "startCook"]
+    assert_hold(device.commands[2], 400)
+    assert entry.runtime_data.settings.temperature == 400
+    assert hass.states.get(FRYER).attributes["temperature"] == 400
+
+
+async def test_hold_found_after_last_poll_is_kept(hass, manager, device):
+    """The last poll says off, but a fresh read finds a hold at the same temperature."""
+    entry = await setup(hass, manager)
+    await entry.runtime_data.hold()
+    device.commands.clear()
+    entry.runtime_data.async_set_updated_data(replace(entry.runtime_data.data, status="standby", held=False))
+    await call(hass, "climate", "turn_on", entity_id=FRYER)
+    assert not device.commands
+
+
+async def test_start_during_hold_cooks_without_preheat(hass, manager, device):
+    entry = await setup(hass, manager)
+    await call(hass, "climate", "turn_on", entity_id=FRYER)
+    await call(hass, "number", "set_value", entity_id="number.kitchen_air_fryer_cook_time", value=12)
+    device.status = "preheatEnd"
+    await refresh(hass, entry)
+    await call(hass, "button", "press", entity_id="button.kitchen_air_fryer_start")
+    assert [c["method"] for c in device.commands] == ["startCook", "endCook", "startCook"]
+    assert_plain_cook(device.commands[2], 350, 720)
+    assert not entry.runtime_data.data.held
+    assert hass.states.get(FRYER).attributes["cook_status"] == "cooking"
+
+
+async def test_hold_stops_itself(hass, manager, device):
+    entry = await setup(hass, manager)
+    await call(hass, "climate", "turn_on", entity_id=FRYER)
+    device.status = "preheatEnd"
+    await refresh(hass, entry)
+    await later(hass, HOLD_LIMIT_MIN - 1)
+    assert [c["method"] for c in device.commands] == ["startCook"]
+    await later(hass, HOLD_LIMIT_MIN + 1)
+    assert [c["method"] for c in device.commands] == ["startCook", "endCook"]
+    assert hass.states.get(FRYER).state == "off"
+
+
+async def test_moved_hold_gets_a_new_limit(hass, manager, device):
+    entry = await setup(hass, manager)
+    coordinator = entry.runtime_data
+    await call(hass, "climate", "turn_on", entity_id=FRYER)
+    first = coordinator._hold_limit
+    await call(hass, "climate", "set_temperature", entity_id=FRYER, temperature=400)
+    assert coordinator._hold_limit not in (None, first)
+    await later(hass, HOLD_LIMIT_MIN + 1)
+    assert [c["method"] for c in device.commands] == ["startCook", "endCook", "startCook", "endCook"]
+
+
+@pytest.mark.parametrize("how", ["start", "cook", "keep_warm", "fryer"])
+async def test_hold_limit_leaves_food_alone(hass, manager, device, how):
+    entry = await setup(hass, manager)
+    await call(hass, "button", "press", entity_id="button.kitchen_air_fryer_preheat")
+    assert_hold(device.commands[0], 350)
+    if how == "start":
+        await call(hass, "button", "press", entity_id="button.kitchen_air_fryer_start")
+    elif how == "cook":
+        await call(hass, DOMAIN, "cook", temperature=380, minutes=20)
+    elif how == "keep_warm":
+        await call(hass, "button", "press", entity_id="button.kitchen_air_fryer_keep_warm")
+    else:
+        # Start pressed on the fryer itself runs the placeholder step.
+        device.status = "cooking"
+        await refresh(hass, entry)
+    sent = len(device.commands)
+    await later(hass, HOLD_LIMIT_MIN + 1)
+    assert len(device.commands) == sent
+    assert device.commands[-1]["method"] == "startCook"
+
+
+async def test_unload_cancels_hold_limit(hass, manager, device):
+    entry = await setup(hass, manager)
+    await call(hass, "climate", "turn_on", entity_id=FRYER)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await later(hass, HOLD_LIMIT_MIN + 1)
+    assert [c["method"] for c in device.commands] == ["startCook"]
+
+
+async def test_turn_off_stops_hold(hass, manager, device):
+    await setup(hass, manager)
+    await call(hass, "climate", "turn_on", entity_id=FRYER)
+    await call(hass, "climate", "turn_off", entity_id=FRYER)
+    assert [c["method"] for c in device.commands] == ["startCook", "endCook"]
+    await later(hass, HOLD_LIMIT_MIN + 1)
+    assert len(device.commands) == 2
+
+
+async def test_keep_warm_button_and_turn_off(hass, manager, device):
+    await setup(hass, manager)
+    await call(hass, "button", "press", entity_id="button.kitchen_air_fryer_keep_warm")
+    (sent,) = device.commands
+    assert_plain_cook(sent, 170, 900)
+    assert hass.states.get(FRYER).state == "heat"
+    await call(hass, "climate", "turn_off", entity_id=FRYER)
+    assert device.commands[-1]["method"] == "endCook"
+    assert hass.states.get(FRYER).state == "off"
+
+
+async def test_keep_warm_replaces_hold(hass, manager, device):
+    await setup(hass, manager)
+    await call(hass, "climate", "turn_on", entity_id=FRYER)
+    await call(hass, "button", "press", entity_id="button.kitchen_air_fryer_keep_warm")
+    assert [c["method"] for c in device.commands] == ["startCook", "endCook", "startCook"]
+    assert_plain_cook(device.commands[2], 170, 900)
+
+
+@pytest.mark.parametrize("status", ["cooking", "cookStop", "pullOut", "preheatEnd", "heating"])
+async def test_keep_warm_refused_during_cook(hass, manager, device, status):
+    device.status = status
+    await setup(hass, manager)
+    with pytest.raises(ServiceValidationError) as exc:
+        await call(hass, "button", "press", entity_id="button.kitchen_air_fryer_keep_warm")
+    assert exc.value.translation_key == "busy"
+    assert not device.commands
 
 
 async def test_off_during_start_delay_sends_nothing(hass, manager, device, monkeypatch):
@@ -196,11 +370,13 @@ async def test_turn_off_refused_by_cloud_raises(hass, manager, device):
     assert exc.value.translation_key == "command_refused"
 
 
-async def test_turn_on_after_preheat_continues(hass, manager, device):
+async def test_turn_on_after_preheat_waits_for_start(hass, manager, device):
+    """A cook queued behind a preheat starts from the Start button, not from turn on."""
     device.status = "preheatEnd"
-    await setup(hass, manager)
+    entry = await setup(hass, manager)
+    assert not entry.runtime_data.data.held
     await call(hass, "climate", "set_hvac_mode", entity_id=FRYER, hvac_mode="heat")
-    assert [c["method"] for c in device.commands] == ["preheatCook"]
+    assert not device.commands
 
 
 async def test_turn_on_while_running_sends_nothing(hass, manager, device):
@@ -215,12 +391,20 @@ async def test_preset_fills_settings_and_sends_program(hass, manager, device):
     await call(hass, "select", "select_option", entity_id="select.kitchen_air_fryer_preset", option="chicken")
     assert hass.states.get(FRYER).attributes["temperature"] == 380
     assert hass.states.get("number.kitchen_air_fryer_cook_time").state == "23"
-    await call(hass, "button", "press", entity_id="button.kitchen_air_fryer_preheat")
+    await call(hass, "button", "press", entity_id="button.kitchen_air_fryer_start")
     sent = device.commands[0]["data"]
-    assert sent["hasPreheat"] == 1
+    assert not sent.get("hasPreheat")
     assert (sent["mode"], sent["recipeId"]) == ("Chicken", 2)
     assert sent["startAct"]["cookTemp"] == 380
     assert sent["startAct"]["cookSetTime"] == 1380
+
+
+async def test_preheat_button_holds_at_setting(hass, manager, device):
+    await setup(hass, manager)
+    await call(hass, "select", "select_option", entity_id="select.kitchen_air_fryer_preset", option="chicken")
+    await call(hass, "button", "press", entity_id="button.kitchen_air_fryer_preheat")
+    (sent,) = device.commands
+    assert_hold(sent, 380)
 
 
 async def test_manual_keeps_chosen_settings(hass, manager, device):
@@ -306,15 +490,15 @@ async def test_celsius_restore(hass, manager):
 async def test_off_while_start_is_sending_stops(hass, manager, device, monkeypatch):
     entry = await setup(hass, manager)
     coordinator = entry.runtime_data
-    original = coordinator.start
+    original = coordinator.hold
 
     async def slow_start(*args, **kwargs):
         await asyncio.sleep(0.05)
         await original(*args, **kwargs)
-        # The fryer is cooking, but no poll has seen it yet.
-        device.status = "cooking"
+        # The fryer is heating, but no poll has seen it yet.
+        device.status = "heating"
 
-    monkeypatch.setattr(coordinator, "start", slow_start)
+    monkeypatch.setattr(coordinator, "hold", slow_start)
     mode = hass.async_create_task(
         hass.services.async_call("climate", "set_hvac_mode", {"entity_id": FRYER, "hvac_mode": "heat"}, True)
     )
@@ -347,3 +531,78 @@ async def test_unload_during_start_delay_sends_nothing(hass, manager, device, mo
     assert await hass.config_entries.async_unload(entry.entry_id)
     await mode
     assert not device.commands
+
+
+async def test_hold_limit_retries_after_a_failed_read(hass, manager, device, caplog):
+    entry = await setup(hass, manager)
+    await call(hass, "climate", "turn_on", entity_id=FRYER)
+    device.error = TimeoutError()
+    await later(hass, HOLD_LIMIT_MIN + 1)
+    assert [c["method"] for c in device.commands] == ["startCook"]
+    assert "Could not stop a hold" in caplog.text
+    device.error = None
+    # A good poll must not grant the hold a fresh 30 minutes.
+    await refresh(hass, entry)
+    assert entry.runtime_data.data.held
+    await later(hass, 0.5)
+    assert [c["method"] for c in device.commands] == ["startCook"]
+    await later(hass, 1.5)
+    assert [c["method"] for c in device.commands] == ["startCook", "endCook"]
+    assert hass.states.get(FRYER).state == "off"
+
+
+async def test_hold_limit_gives_up_after_bounded_tries(hass, manager, device):
+    await setup(hass, manager)
+    await call(hass, "climate", "turn_on", entity_id=FRYER)
+    device.error = TimeoutError()
+    await later(hass, HOLD_LIMIT_MIN + 1)
+    for _ in range(coordinator.LIMIT_RETRIES + 2):
+        await later(hass, 1.5)
+    assert [c["method"] for c in device.commands] == ["startCook"]
+
+
+async def test_temperature_alone_never_starts_a_stopped_fryer(hass, manager, device):
+    """The last poll showed a hold, but the fryer was stopped at its panel since."""
+    entry = await setup(hass, manager)
+    await call(hass, "climate", "turn_on", entity_id=FRYER)
+    assert entry.runtime_data.data.held
+    device.status = "standby"
+    await call(hass, "climate", "set_temperature", entity_id=FRYER, temperature=400)
+    assert [c["method"] for c in device.commands] == ["startCook"]
+    assert entry.runtime_data.settings.temperature == 400
+    assert hass.states.get(FRYER).state == "off"
+    await later(hass, HOLD_LIMIT_MIN + 1)
+    assert [c["method"] for c in device.commands] == ["startCook"]
+
+
+@pytest.mark.parametrize("status", ["cooking", "hold"])
+async def test_set_temperature_with_off_stops_first(hass, manager, device, status):
+    entry = await setup(hass, manager)
+    if status == "hold":
+        await call(hass, "climate", "turn_on", entity_id=FRYER)
+    else:
+        device.status = status
+        await refresh(hass, entry)
+    await call(hass, "climate", "set_temperature", entity_id=FRYER, temperature=400, hvac_mode="off")
+    assert device.commands[-1]["method"] == "endCook"
+    assert entry.runtime_data.settings.temperature == 400
+    assert hass.states.get(FRYER).state == "off"
+
+
+async def test_hold_move_waits_for_cloud_to_report_idle(hass, manager, device):
+    await setup(hass, manager)
+    await call(hass, "climate", "turn_on", entity_id=FRYER)
+    device.end_lag = 2
+    await call(hass, "climate", "set_temperature", entity_id=FRYER, temperature=400)
+    assert [c["method"] for c in device.commands] == ["startCook", "endCook", "startCook"]
+    assert_hold(device.commands[2], 400)
+
+
+async def test_hold_move_gives_up_if_never_idle(hass, manager, device):
+    await setup(hass, manager)
+    await call(hass, "climate", "turn_on", entity_id=FRYER)
+    device.end_lag = coordinator.CLEAR_POLLS + 1
+    with pytest.raises(HomeAssistantError) as exc:
+        await call(hass, "climate", "set_temperature", entity_id=FRYER, temperature=400)
+    assert exc.value.translation_key == "command_refused"
+    assert [c["method"] for c in device.commands] == ["startCook", "endCook"]

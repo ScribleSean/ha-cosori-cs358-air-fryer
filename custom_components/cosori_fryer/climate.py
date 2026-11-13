@@ -25,7 +25,7 @@ from .entity import FryerEntity
 # temperature HomeKit sends behind the mode change it sends first.
 PARALLEL_UPDATES = 0
 # HomeKit sends a mode change and a temperature as two calls. Waiting this long
-# before starting lets "set to 360" and "turn on" from one request cook at 360.
+# before starting lets "set to 360" and "turn on" from one request heat to 360.
 START_DELAY = 1.0
 ACTIONS = {
     "heating": HVACAction.PREHEATING,
@@ -39,7 +39,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
 
 class FryerClimate(FryerEntity, ClimateEntity, RestoreEntity):
-    """Heat starts a cook with the chosen settings; off stops it."""
+    """Heat preheats to the target and holds it there; off stops anything."""
 
     _attr_name = None
     _attr_hvac_modes: ClassVar[list[HVACMode]] = [HVACMode.OFF, HVACMode.HEAT]
@@ -117,13 +117,29 @@ class FryerClimate(FryerEntity, ClimateEntity, RestoreEntity):
         return min(400, max(170, round(temperature / 10) * 10))
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
-        if (temperature := kwargs.get(ATTR_TEMPERATURE)) is not None:
+        hvac_mode = kwargs.get("hvac_mode")
+        temperature = kwargs.get(ATTR_TEMPERATURE)
+        if hvac_mode == HVACMode.OFF:
+            # Off always stops; the temperature is kept for next time.
+            await self.async_set_hvac_mode(hvac_mode)
+            if temperature is not None:
+                self.coordinator.update_settings(temperature=self._step(temperature))
+            return
+        if temperature is not None:
             temperature = self._step(temperature)
-            busy = self._running or self._sending is not None
-            if busy and temperature != self.target_temperature:
+            changed = temperature != self.target_temperature
+            if changed and self.coordinator.data.held and self._sending is None:
+                # A hold has no food in yet, so move it. A fryer stopped since the
+                # last poll stays off.
+                await self.coordinator.hold(temperature, only_move=True)
+                self.coordinator.update_settings(temperature=temperature)
+                if hvac_mode is None:
+                    return
+            elif changed and (self._running or self._sending is not None):
                 raise ServiceValidationError(translation_domain=DOMAIN, translation_key="running")
-            self.coordinator.update_settings(temperature=temperature)
-        if (hvac_mode := kwargs.get("hvac_mode")) is not None:
+            else:
+                self.coordinator.update_settings(temperature=temperature)
+        if hvac_mode is not None:
             await self.async_set_hvac_mode(hvac_mode)
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
@@ -140,9 +156,7 @@ class FryerClimate(FryerEntity, ClimateEntity, RestoreEntity):
             with contextlib.suppress(ServiceValidationError):
                 await self.coordinator.stop()
             return
-        if self.coordinator.data.status == "preheatEnd":
-            await self.coordinator.start()
-            return
+        # Already on: a hold, a cook, or a preheat waiting for Start. Start cooks, not this.
         if self._running or self._pending:
             return
         self._starting = True
@@ -153,7 +167,7 @@ class FryerClimate(FryerEntity, ClimateEntity, RestoreEntity):
                 return
             self._starting = False
             self._sending = asyncio.Event()
-            await self.coordinator.start()
+            await self.coordinator.hold()
         finally:
             self._starting = False
             if self._sending is not None:

@@ -31,6 +31,11 @@ class FakeDevice:
         self.cook_temp = 350
         self.preheat_remaining = 240
         self.cook_remaining = 600
+        self.cook_set_time = 600
+        self.preheat_set_time = 240  # 0 when the cook has no preheat step.
+        # Reads that still report the old phase after endCook, as cloud lag can.
+        self.end_lag = 0
+        self.reads_until_idle = None
         self.error = None
         self.command_error = None
         self.response_code = 0
@@ -62,13 +67,17 @@ class FakeDevice:
             self.commands.append(payload)
             if self.command_error:
                 raise self.command_error
-            if payload["method"] == "startCook" and not (self.command_code or self.command_inner_code):
-                # The fryer keeps the settings it was sent and reports them back.
-                self.cook_temp = payload["data"]["startAct"]["cookTemp"]
-                self.cook_remaining = payload["data"]["startAct"]["cookSetTime"]
+            if not (self.command_code or self.command_inner_code):
+                self.answer(payload)
             return {"code": self.command_code, "result": {"code": self.command_inner_code, "result": {}}}, 200
         if self.error:
             raise self.error
+        if self.reads_until_idle is not None:
+            if self.reads_until_idle == 0:
+                self.status = "standby"
+                self.reads_until_idle = None
+            else:
+                self.reads_until_idle -= 1
         if self.malformed:
             return {"code": 0, "result": []}, 200
         response = deepcopy(RECORDED)
@@ -77,16 +86,36 @@ class FakeDevice:
         raw.update(
             cookStatus=self.status,
             currentTemp=self.current_temp,
-            preheatSetTime=240,
+            preheatSetTime=self.preheat_set_time,
             preheatLastTime=self.preheat_remaining,
             preheatTemp=self.cook_temp,
             totalTimeRemaining=self.preheat_remaining + self.cook_remaining,
         )
+        raw["stepArray"][0]["cookSetTime"] = self.cook_set_time
         raw["stepArray"][0]["cookLastTime"] = self.cook_remaining
         raw["stepArray"][0]["cookTemp"] = self.cook_temp
         if self.status == "standby":
             raw["stepArray"] = []
         return response, 200
+
+    def answer(self, payload):
+        """Move to the phase the fryer reports after an accepted command."""
+        method = payload["method"]
+        if method == "startCook":
+            # The fryer keeps the settings it was sent and reports them back.
+            data = payload["data"]
+            preheat = bool(data.get("hasPreheat"))
+            self.status = "heating" if preheat else "cooking"
+            self.cook_temp = data["startAct"]["cookTemp"]
+            self.cook_set_time = self.cook_remaining = data["startAct"]["cookSetTime"]
+            self.preheat_set_time = self.preheat_remaining = 240 if preheat else 0
+        elif method == "preheatCook":
+            self.status = "cooking"
+        elif method == "endCook":
+            if self.end_lag:
+                self.reads_until_idle = self.end_lag
+            else:
+                self.status = "standby"
 
 
 def fake_manager(device):

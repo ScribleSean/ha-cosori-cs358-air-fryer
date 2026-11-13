@@ -16,12 +16,12 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
-from homeassistant.util.unit_conversion import TemperatureConverter
 
 from custom_components.cosori_fryer._vendor.pyvesync.utils.errors import VeSyncError
 
+from . import planner
 from .const import DOMAIN
-from .coordinator import AUTH_ERRORS, FryerConfigEntry, FryerCoordinator
+from .coordinator import AUTH_ERRORS, FryerConfigEntry, FryerCoordinator, make_plan
 from .manager import FryerManager
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,44 +51,55 @@ def finite_number(value):
     return value
 
 
+def loaded_coordinator(hass: HomeAssistant, call: ServiceCall) -> FryerCoordinator:
+    entries = hass.config_entries.async_entries(DOMAIN)
+    if entry_id := call.data.get("config_entry_id"):
+        entries = [entry for entry in entries if entry.entry_id == entry_id]
+    if len(entries) != 1 or entries[0].state is not ConfigEntryState.LOADED:
+        raise ServiceValidationError(translation_domain=DOMAIN, translation_key="choose_account")
+    return entries[0].runtime_data
+
+
+COOK_SCHEMA = vol.Schema(
+    {
+        vol.Required("temperature"): finite_number,
+        vol.Required("minutes"): finite_number,
+        vol.Optional("preheat", default=False): vol.Boolean(),
+        vol.Optional("temperature_unit"): vol.In(["°F", "°C"]),
+        vol.Optional("config_entry_id"): cv.string,
+    }
+)
+KEEP_WARM_SCHEMA = vol.Schema(
+    {
+        vol.Optional("minutes"): finite_number,
+        vol.Optional("config_entry_id"): cv.string,
+    }
+)
+
+
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Register the explicit cook action."""
+    """Register the cook and keep warm actions."""
 
-    async def start_cook(call: ServiceCall) -> None:
-        entries = hass.config_entries.async_entries(DOMAIN)
-        if entry_id := call.data.get("config_entry_id"):
-            entries = [entry for entry in entries if entry.entry_id == entry_id]
-        if len(entries) != 1 or entries[0].state is not ConfigEntryState.LOADED:
-            raise ServiceValidationError(translation_domain=DOMAIN, translation_key="choose_account")
+    async def cook(call: ServiceCall) -> None:
+        coordinator = loaded_coordinator(hass, call)
         temperature = call.data["temperature"]
-        unit = call.data.get("temperature_unit", hass.config.units.temperature_unit)
-        fahrenheit = TemperatureConverter.convert(temperature, unit, "°F")
-        if unit == "°C":
-            fahrenheit = round(fahrenheit / 10) * 10
-        if not 170 <= fahrenheit <= 400 or not math.isclose(
-            fahrenheit / 10, round(fahrenheit / 10), abs_tol=1e-6
-        ):
-            raise ServiceValidationError(translation_domain=DOMAIN, translation_key="invalid_temperature")
-        minutes = call.data["minutes"]
-        if not minutes.is_integer() or not 1 <= minutes <= 60:
-            raise ServiceValidationError(translation_domain=DOMAIN, translation_key="invalid_minutes")
-        await entries[0].runtime_data.start_cook(round(fahrenheit), int(minutes), call.data["preheat"])
-        _LOGGER.info("Started cook at %s °F for %s minutes", round(fahrenheit), int(minutes))
+        if call.data.get("temperature_unit", hass.config.units.temperature_unit) == "°C":
+            temperature = f"{temperature:g}C"
+        plan = make_plan(
+            planner.Intent(
+                "cook", temp_f=temperature, minutes=call.data["minutes"], preheat=call.data["preheat"]
+            )
+        )
+        await coordinator.cook(plan.temp_f, plan.minutes, plan.preheat)
+        _LOGGER.info("Started cook at %s °F for %s minutes", plan.temp_f, plan.minutes)
 
-    hass.services.async_register(
-        DOMAIN,
-        "start_cook",
-        start_cook,
-        schema=vol.Schema(
-            {
-                vol.Required("temperature"): finite_number,
-                vol.Required("minutes"): finite_number,
-                vol.Required("preheat"): vol.Boolean(),
-                vol.Optional("temperature_unit"): vol.In(["°F", "°C"]),
-                vol.Optional("config_entry_id"): cv.string,
-            }
-        ),
-    )
+    async def keep_warm(call: ServiceCall) -> None:
+        await loaded_coordinator(hass, call).keep_warm(call.data.get("minutes"))
+
+    # start_cook is the 0.7 name, kept so existing automations keep working.
+    for name in ("cook", "start_cook"):
+        hass.services.async_register(DOMAIN, name, cook, schema=COOK_SCHEMA)
+    hass.services.async_register(DOMAIN, "keep_warm", keep_warm, schema=KEEP_WARM_SCHEMA)
     return True
 
 

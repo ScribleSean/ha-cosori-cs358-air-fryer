@@ -1,4 +1,4 @@
-"""Start, preheat and stop, like the buttons on the fryer."""
+"""Start, preheat, keep warm and stop."""
 
 from homeassistant.components.button import ButtonEntity
 
@@ -8,7 +8,9 @@ PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    async_add_entities(FryerButton(entry.runtime_data, key) for key in ("start", "preheat", "stop"))
+    async_add_entities(
+        FryerButton(entry.runtime_data, key) for key in ("start", "preheat", "keep_warm", "stop")
+    )
 
 
 class FryerButton(FryerEntity, ButtonEntity):
@@ -21,5 +23,9 @@ class FryerButton(FryerEntity, ButtonEntity):
     async def async_press(self):
         if self.key == "stop":
             await self.coordinator.stop()
+        elif self.key == "preheat":
+            await self.coordinator.hold()
+        elif self.key == "keep_warm":
+            await self.coordinator.keep_warm()
         else:
-            await self.coordinator.start(preheat=self.key == "preheat")
+            await self.coordinator.start()

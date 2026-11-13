@@ -32,8 +32,17 @@ async def refresh(hass, entry):
 
 
 async def start(hass, **changes):
+    """The 0.7 action name, kept as an alias of cook."""
     data = {"temperature": 350, "minutes": 10, "preheat": True, **changes}
     await hass.services.async_call(DOMAIN, "start_cook", data, blocking=True)
+
+
+async def cook(hass, **data):
+    await hass.services.async_call(DOMAIN, "cook", data, blocking=True)
+
+
+async def keep_warm(hass, **data):
+    await hass.services.async_call(DOMAIN, "keep_warm", data, blocking=True)
 
 
 async def test_setup(hass, manager, caplog):
@@ -41,7 +50,7 @@ async def test_setup(hass, manager, caplog):
     assert entry.state is ConfigEntryState.LOADED
     counts = {
         "sensor": 4,
-        "button": 3,
+        "button": 4,
         "event": 1,
         "climate": 1,
         "number": 1,
@@ -212,29 +221,136 @@ async def test_start_350_ten_minutes(hass, manager, device):
     [
         {"temperature": 160},
         {"temperature": 410},
-        {"temperature": 355},
-        {"temperature": 350.1},
+        {"temperature": 164},
         {"minutes": 0},
         {"minutes": 61},
-        {"minutes": 2.5},
+        {"minutes": -1},
         {"temperature": 70, "temperature_unit": "°C"},
         {"temperature": -100, "temperature_unit": "°C"},
     ],
 )
 async def test_invalid_settings(hass, manager, device, changes):
     await setup(hass, manager)
-    with pytest.raises(ServiceValidationError):
+    with pytest.raises(ServiceValidationError) as exc:
         await start(hass, **changes)
+    assert exc.value.translation_key == "invalid_request"
+    assert exc.value.translation_placeholders["reason"]
     assert not device.commands
 
 
-@pytest.mark.parametrize("field", ["temperature", "minutes", "preheat"])
-async def test_required_fields(hass, manager, device, field):
+async def test_refusal_states_the_reason(hass, manager, device):
+    await setup(hass, manager)
+    with pytest.raises(ServiceValidationError) as exc:
+        await cook(hass, temperature=350, minutes=90)
+    assert "60-minute limit" in exc.value.translation_placeholders["reason"]
+    with pytest.raises(ServiceValidationError) as exc:
+        await cook(hass, temperature=450, minutes=10)
+    assert "outside" in exc.value.translation_placeholders["reason"]
+    assert not device.commands
+
+
+@pytest.mark.parametrize(
+    "asked,sent",
+    [
+        ({"temperature": 355, "minutes": 10}, (350, 600)),
+        ({"temperature": 405, "minutes": 10}, (400, 600)),
+        ({"temperature": 165, "minutes": 10}, (170, 600)),
+        ({"temperature": 350, "minutes": 2.5}, (350, 180)),
+        ({"temperature": 180, "temperature_unit": "°C", "minutes": 10}, (360, 600)),
+    ],
+)
+async def test_cook_rounds_to_settings(hass, manager, device, asked, sent, caplog):
+    entry = await setup(hass, manager)
+    caplog.set_level("INFO", logger="custom_components.cosori_fryer")
+    await cook(hass, **asked)
+    (command,) = device.commands
+    assert not command["data"].get("hasPreheat")
+    assert (command["data"]["startAct"]["cookTemp"], command["data"]["startAct"]["cookSetTime"]) == sent
+    assert "nearest 10" in caplog.text or "rounds up" in caplog.text
+    settings = entry.runtime_data.settings
+    assert (settings.temperature, settings.minutes * 60) == sent
+
+
+@pytest.mark.parametrize("service", ["cook", "start_cook"])
+@pytest.mark.parametrize("field", ["temperature", "minutes"])
+async def test_required_fields(hass, manager, device, service, field):
     await setup(hass, manager)
     data = {"temperature": 350, "minutes": 10, "preheat": True}
     del data[field]
     with pytest.raises(vol.Invalid):
-        await hass.services.async_call(DOMAIN, "start_cook", data, blocking=True)
+        await hass.services.async_call(DOMAIN, service, data, blocking=True)
+    assert not device.commands
+
+
+@pytest.mark.parametrize("service", ["cook", "start_cook"])
+async def test_preheat_is_off_by_default(hass, manager, device, service):
+    await setup(hass, manager)
+    await hass.services.async_call(DOMAIN, service, {"temperature": 350, "minutes": 10}, blocking=True)
+    assert not device.commands[0]["data"].get("hasPreheat")
+
+
+async def test_cook_with_preheat_queues_the_cook(hass, manager, device):
+    entry = await setup(hass, manager)
+    await cook(hass, temperature=400, minutes=12, preheat=True)
+    assert device.commands[0]["data"]["hasPreheat"] == 1
+    assert device.commands[0]["data"]["startAct"]["cookSetTime"] == 720
+    device.status = "preheatEnd"
+    await refresh(hass, entry)
+    assert not entry.runtime_data.data.held
+    # A real cook is queued: another cook is refused rather than replacing it.
+    with pytest.raises(ServiceValidationError) as exc:
+        await cook(hass, temperature=350, minutes=5)
+    assert exc.value.translation_key == "busy"
+    with pytest.raises(ServiceValidationError):
+        await keep_warm(hass)
+    assert len(device.commands) == 1
+
+
+async def test_cook_replaces_hold(hass, manager, device):
+    entry = await setup(hass, manager)
+    await entry.runtime_data.hold(380)
+    assert entry.runtime_data.data.held
+    await cook(hass, temperature=400, minutes=8)
+    assert [c["method"] for c in device.commands] == ["startCook", "endCook", "startCook"]
+    assert device.commands[2]["data"]["startAct"]["cookSetTime"] == 480
+    assert not device.commands[2]["data"].get("hasPreheat")
+
+
+@pytest.mark.parametrize("status", ["cooking", "cookStop", "heating"])
+async def test_cook_refused_while_cooking(hass, manager, device, status):
+    device.status = status
+    await setup(hass, manager)
+    with pytest.raises(ServiceValidationError) as exc:
+        await cook(hass, temperature=350, minutes=5)
+    assert exc.value.translation_key == "busy"
+    assert not device.commands
+
+
+@pytest.mark.parametrize(
+    "minutes,seconds", [(None, 900), (20, 1200), (2.5, 180), (90, 3600), ("1 hour", None)]
+)
+async def test_keep_warm_action(hass, manager, device, minutes, seconds):
+    await setup(hass, manager)
+    if seconds is None:
+        with pytest.raises(vol.Invalid):
+            await keep_warm(hass, minutes=minutes)
+        assert not device.commands
+        return
+    await keep_warm(hass, **({} if minutes is None else {"minutes": minutes}))
+    (sent,) = device.commands
+    assert not sent["data"].get("hasPreheat")
+    assert (sent["data"]["startAct"]["cookTemp"], sent["data"]["startAct"]["cookSetTime"]) == (170, seconds)
+
+
+async def test_keep_warm_action_refusals(hass, manager, device):
+    await setup(hass, manager)
+    with pytest.raises(ServiceValidationError) as exc:
+        await keep_warm(hass, minutes=0)
+    assert exc.value.translation_key == "invalid_request"
+    device.status = "cooking"
+    with pytest.raises(ServiceValidationError) as exc:
+        await keep_warm(hass)
+    assert exc.value.translation_key == "busy"
     assert not device.commands
 
 
