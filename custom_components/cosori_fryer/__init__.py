@@ -19,7 +19,7 @@ from homeassistant.helpers.typing import ConfigType
 
 from custom_components.cosori_fryer._vendor.pyvesync.utils.errors import VeSyncError
 
-from . import planner
+from . import assist, planner
 from .const import DOMAIN
 from .coordinator import AUTH_ERRORS, FryerConfigEntry, FryerCoordinator, make_plan
 from .manager import FryerManager
@@ -78,7 +78,7 @@ KEEP_WARM_SCHEMA = vol.Schema(
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Register the cook and keep warm actions."""
+    """Register the cook and keep warm actions and the Assist sentences."""
 
     async def cook(call: ServiceCall) -> None:
         coordinator = loaded_coordinator(hass, call)
@@ -100,6 +100,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     for name in ("cook", "start_cook"):
         hass.services.async_register(DOMAIN, name, cook, schema=COOK_SCHEMA)
     hass.services.async_register(DOMAIN, "keep_warm", keep_warm, schema=KEEP_WARM_SCHEMA)
+    assist.async_setup(hass)
     return True
 
 
@@ -138,7 +139,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: FryerConfigEntry) -> boo
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    assist.async_sync_exposure(hass, entry)
+    assist.async_watch_exposure(hass, entry)
+    entry.async_on_unload(entry.add_update_listener(_entry_updated))
     return True
+
+
+async def _entry_updated(hass: HomeAssistant, entry: FryerConfigEntry) -> None:
+    """Keep what Assist can heat in step with the confirm option."""
+    assist.async_sync_exposure(hass, entry)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: FryerConfigEntry) -> bool:

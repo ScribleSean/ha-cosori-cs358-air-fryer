@@ -42,7 +42,7 @@ def test_service_contract():
 
 def test_version():
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.8.0"
+    assert manifest["version"] == "0.9.0"
 
 
 def test_ci_pins_and_history():

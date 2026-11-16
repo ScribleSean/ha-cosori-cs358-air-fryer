@@ -400,6 +400,7 @@ class Intent:
     preheat: bool | None = None
     food_in: bool | None = None  # the food is already in the basket
     arriving_in_min: object = None  # keep warm: "I'm N minutes out"
+    question: str | None = None  # set by parse() for a request that must not run as is
 
 
 @dataclass(frozen=True)
@@ -472,6 +473,10 @@ _NO_PREHEAT = re.compile(
     r"|don'?t preheat|do not preheat)\b"
 )
 _COOK = re.compile(r"\b(cook|air ?fry|fry|bake|roast|reheat|crisp|make|do|start)\b")
+# Words that ask for a cook even next to "keep it warm".
+_COOKING = re.compile(
+    r"\b(cook\w*|air ?fry\w*|fry|bake|roast|reheat|crisp|pre-?heat\w*)\b"
+)
 _FOOD_IN = re.compile(
     r"\b((?:is|are|it'?s|they'?re|'s|'re) (?:already )?in(?: the basket)?"
     r"|in the basket|already in|put (?:it|them) in)\b"
@@ -484,10 +489,75 @@ _TEMP_UNIT = re.compile(
     + r"\s*(?:(?:°|º|degrees?|deg\.?)\s*(fahrenheit|celsius|f|c)?|(fahrenheit|celsius|f|c))\b"
     r"|" + _NUM + r"\s*(?:°|º)"
 )
-_MIN_UNIT = re.compile(_NUM + r"\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?)\b")
+_MIN_UNIT = re.compile(
+    _NUM + r"\s*(?:more\s+|extra\s+)?(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?)\b"
+)
+# "1 hour 30 minutes", "20 minutes and 30 seconds": parts of one duration.
+_JOINED = re.compile(r"\s*,?\s*(?:and\s*)?")
+# "12 minutes plus 3 minutes" says outright that the times add.
+_PLUS = re.compile(r"\s*,?\s*plus\s*")
+# "10 minutes then 5 more minutes": "then" joins a time only when it says "more".
+_THEN_MORE = re.compile(r"\s*,?\s*(?:and\s+)?then\s*")
+# "5 more", "3 extra": a top-up, which needs a base time to add to.
+_TOPUP = re.compile(_NUM + r"\s*(?:more|extra)\b")
+# "12 or 15 minutes", "12 to 15 min", "12-15 minutes": two times, not one. A
+# three-digit number is a temperature, so "at 380 - 12 minutes" is one time.
+_SHORT = r"(?<![\d.])(\d{1,2}(?:\.\d+)?)"
+_RANGE = re.compile(
+    _SHORT + r"\s*(?:or|to|-)\s*" + _SHORT + r"\s*(hours?|hrs?|h|minutes?|mins?|m)\b"
+)
+# Numbers a food description may carry: "x6", "6x", "2 lb", "8 oz", "4 pieces".
+_AMOUNT = re.compile(
+    r"\bx\s*\d+\b|\b\d+\s*x\b|\b\d+(?:\.\d+)?\s*(?:lbs?|pounds?|oz|ounces?|pcs?|pieces?)\b"
+)
+# A shake or flip time is a reminder, not part of the cook time.
+_SHAKE = re.compile(
+    r"\b(?:shake|flip|turn)(?:\s+(?:it|them|the basket|over))?\s+"
+    r"(?:(?:after|at)\s+" + _NUM + r"\s*(?:hours?|hrs?|h|minutes?|mins?|m)?\b"
+    r"|halfway(?:\s+through)?\b)"
+)
+
+
+def _unit_rank(match: re.Match) -> int:
+    """0 for hours, 1 for minutes, 2 for seconds."""
+    return {"h": 0, "s": 2}.get(match[2][0], 1)
+
+
+def _duration(t: str) -> tuple[object, str]:
+    """(minutes, text without them). One duration in falling units ("1 hour 30
+    minutes") adds up to 90, and so does a stated top-up ("10 minutes then 5
+    more"). Two separate times ("12 minutes and 7 minutes") leave the time
+    unknown, so the plan asks instead of adding or picking one."""
+    found = list(_MIN_UNIT.finditer(t))
+    if not found:
+        return None, t
+    run = [found[0]]
+    for match in found[1:]:
+        between = t[run[-1].end() : match.start()]
+        more = re.search(r"\b(?:more|extra)\b", match[0])
+        smaller = _unit_rank(match) > _unit_rank(run[-1])
+        joined = (
+            (smaller and not more and _JOINED.fullmatch(between))
+            or (more and (_JOINED.fullmatch(between) or _THEN_MORE.fullmatch(between)))
+            or _PLUS.fullmatch(between)
+        )
+        if not joined:
+            break
+        run.append(match)
+    total = sum(read_minutes(f"{m[1]} {m[2]}") for m in run)
+    minutes = (
+        None
+        if len(run) < len(found)
+        else (f"{run[0][1]} {run[0][2]}" if len(run) == 1 else total)
+    )
+    for match in reversed(found):
+        t = t[: match.start()] + " " + t[match.end() :]
+    return minutes, t
+
+
 _ARRIVAL_UNIT = r"\s*(?P<unit>hours?|hrs?|h|min\w*|m)?\b"
 _ARRIVAL = re.compile(
-    r"(?:" + _NUM + r"\s*(?:min\w*|hours?|hrs?)?\s*(?:out|away)\b"
+    r"(?:" + _NUM + r"\s*(?P<before>min\w*|hours?|hrs?)?\s*(?:out|away)\b"
     r"|\b(?:home|back|there|here|arriv\w*|land\w*)\s+in\s+"
     + _NUM
     + r"|\bin\s+"
@@ -510,6 +580,62 @@ _TENS = {
     "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
 }
 # fmt: on
+
+
+_DEGREES_NEXT = re.compile(r"\s*(?:°|º|degrees?\b|deg\b|fahrenheit\b|f\b)")
+# Only "preheat to" / "heat the fryer to" make a clock-like number heat;
+# "set the timer to three thirty" is a time.
+_HEAT_TO = re.compile(r"\b(?:pre-?heat\w*|heat)(?:\s+(?:it|the\s+(?:air\s+)?fryer))?\s*$")
+_UNIT_NEXT = (
+    r"°|º|degrees?|deg\b|fahrenheit|f\b|c\b|celsius|h\b|hours?|hrs?|m\b|min\w*"
+    r"|secs?|seconds?|lbs?|pounds?|oz|pcs?|pieces?|x\b"
+)
+# "at 4", "by 6", "at 3 30" (a clock-like "three thirty" left as words): a
+# small number after a time word, with no unit, is a time as likely as heat.
+_AT_CLOCK = re.compile(
+    r"\b(?:at|to|by|until|till|around)\s+\d{1,2}(?::\d{2})?"
+    r"(?![\d.]|\s*(?:" + _UNIT_NEXT + r"))"
+)
+# A time of day or a schedule anywhere in the request: the fryer can only
+# start now, so it asks rather than guess which number is heat.
+_CLOCK_WORDS = re.compile(
+    r"\b\d{1,2}:\d{2}\b|\b\d{1,4}\s*[ap]\.?\s*m\b\.?|\b\d+\s*-?\s*ish\b"
+    r"|\bo'?\s*clock\b|\b(?:noon|midnight|tonight|today|tomorrow)\b"
+    r"|\b(?:in the|this|tomorrow) (?:morning|afternoon|evening|night)\b"
+    r"|\b(?:after|before) (?:work|school|dinner|lunch)\b"
+    r"|\bwhen (?:i|we|you|they|he|she)(?:'m| am| are| is)? (?:get|gets|am|are|is)? ?"
+    r"(?:home|back|here|there|in)\b"
+)
+
+
+def _clock_question(digits: str) -> str | None:
+    """A time of day, or a number that could be one, is never read as heat."""
+    t = _SHAKE.sub(" ", digits)
+    at = (
+        m
+        for m in _AT_CLOCK.finditer(t)
+        if not (m[0].startswith("to") and _HEAT_TO.search(t, 0, m.start()))
+    )
+    if next(at, None) or _CLOCK_WORDS.search(t):
+        return (
+            "Is that a temperature or a time of day? "
+            "Say the temperature in degrees, like 350 degrees."
+        )
+    return None
+
+
+def _spoken_heat(m: re.Match) -> str:
+    """'at three eighty' is 380: no clock reads :80. 'at three thirty' could be
+    3:30, so it becomes 330 only with degrees after it or 'heat/set ... to'
+    before it; otherwise the words stay and the plan asks."""
+    tens = _TENS[m[3]]
+    clock_like = tens <= 50
+    sure = _DEGREES_NEXT.match(m.string, m.end()) or (
+        m[1] == "to" and _HEAT_TO.search(m.string, 0, m.start())
+    )
+    if clock_like and not sure:
+        return m[0]
+    return f"{m[1]} {_UNITS[m[2]] * 100 + tens + (_UNITS[m[4]] if m[4] else 0)}"
 
 
 def _small(words: str) -> int | None:
@@ -535,6 +661,7 @@ def _hundreds(match: re.Match) -> str:
 
 def _words_to_digits(text: str) -> str:
     text = re.sub(r"\bhalf an? hour\b", "30 min", text)
+    text = re.sub(r"\bhalf an? minute\b", "0.5 min", text)
     text = re.sub(r"\ban? hour and a half\b", "90 min", text)
     text = re.sub(r"\ban? (hour|minute)\b", r"1 \1", text)
     text = re.sub(r"\bhalf a dozen\b", "6", text)
@@ -546,6 +673,17 @@ def _words_to_digits(text: str) -> str:
         _hundreds,
         text,
     )
+    # "at three eighty" is 380; only after at or to, so counts like "three twenty"
+    # stay. Clock-like ones stay words unless degrees make them heat.
+    text = re.sub(
+        r"\b(at|to) (one|two|three|four)[- ]("
+        + "|".join(_TENS)
+        + r")(?:[- ]("
+        + "|".join(list(_UNITS)[1:10])
+        + r"))?\b",
+        _spoken_heat,
+        text,
+    )
 
     def tens(match: re.Match) -> str:
         return str(_TENS[match[1]] + (_UNITS[match[2]] if match[2] else 0))
@@ -555,7 +693,11 @@ def _words_to_digits(text: str) -> str:
         tens,
         text,
     )
-    return re.sub(r"\b(" + "|".join(_UNITS) + r")\b", lambda m: str(_UNITS[m[1]]), text)
+    text = re.sub(r"\b(" + "|".join(_UNITS) + r")\b", lambda m: str(_UNITS[m[1]]), text)
+    # "12 and a half" is 12.5, so the round-up is stated, not dropped.
+    return re.sub(
+        r"\b(\d+(?:\.\d+)?) and a half\b", lambda m: _fmt(float(m[1]) + 0.5), text
+    )
 
 
 _FILLER = re.compile(
@@ -575,20 +717,39 @@ def parse(text: str) -> Intent:
     # Stop always wins, so "stop keeping it warm" never heats.
     if _STOP.search(t) or _NO_KEEP_WARM.search(t):
         return Intent("stop")
+    if question := _clock_question(t):
+        return Intent("cook", question=question)
 
     if _KEEP_WARM.search(t):
         arriving = minutes = None
         if match := _ARRIVAL.search(t):
-            number = next(g for g in match.groups()[:-1] if g)
-            arriving = f"{number} {match['unit'] or 'min'}"
+            number = next(g for g in (match[1], match[3], match[4]) if g)
+            arriving = f"{number} {match['before'] or match['unit'] or 'min'}"
             t = t[: match.start()] + " " + t[match.end() :]
-        if match := _MIN_UNIT.search(t):
-            minutes = f"{match[1]} {match[2]}"
-        elif match := _FOR_MIN.search(t):
+        timed = list(_MIN_UNIT.finditer(t))
+        said = t
+        minutes, t = _duration(t)
+        both = _COOKING.search(t) or any(
+            int(n) != KEEP_WARM_TEMP_F
+            for n in re.findall(r"\b(\d{3})\b", _FOR_MIN.sub(" ", t))
+        )
+        if both:
+            return Intent(
+                "cook",
+                question=(
+                    "That's a cook and keep warm together; do one at a time. "
+                    "Start the cook; ask for keep warm when it's done."
+                ),
+            )
+        if (minutes is None and timed) or _RANGE.search(said):
+            return Intent("keep_warm", question=_unclear(said, t, timed, None))
+        if minutes is None and (match := _FOR_MIN.search(t)):
             minutes = match[1]
         return Intent("keep_warm", minutes=minutes, arriving_in_min=arriving)
 
+    t = _SHAKE.sub(" ", t)
     set_to = bool(_SET_TO.search(t))
+    raw_t = t
     temp = minutes = None
     if match := _TEMP_UNIT.search(t):
         if match[1]:
@@ -597,18 +758,27 @@ def parse(text: str) -> Intent:
         else:
             temp = match[4]
         t = t[: match.start()] + " " + t[match.end() :]
-    if match := _MIN_UNIT.search(t):
-        minutes = f"{match[1]} {match[2]}"
-        t = t[: match.start()] + " " + t[match.end() :]
+    timed = list(_MIN_UNIT.finditer(t))
+    minutes, t = _duration(t)
     if temp is None and (match := _AT_TEMP.search(t)):
         temp = match[1]
         t = t[: match.start()] + " " + t[match.end() :]
-    if minutes is None and (match := _FOR_MIN.search(t)) and float(match[1]) < 100:
+    if (match := _FOR_MIN.search(t)) and float(match[1]) >= 100:
+        return Intent(
+            "cook",
+            question=(
+                f"'for {match[1]}': minutes or degrees? "
+                "Say it like 350 degrees for 15 minutes."
+            ),
+        )
+    if not timed and (match := _FOR_MIN.search(t)) and float(match[1]) < 100:
         minutes = match[1]
         t = t[: match.start()] + " " + t[match.end() :]
     if temp is None and (match := re.search(r"\b(\d{3})\b", t)):
         temp = match[1]
         t = t[: match.start()] + " " + t[match.end() :]
+    if question := _unclear(raw_t, t, timed, minutes):
+        return Intent("cook", question=question)
 
     preheat_word = bool(_PREHEAT.search(t)) or (set_to and temp is not None)
     no_preheat = bool(_NO_PREHEAT.search(t))
@@ -637,10 +807,49 @@ def parse(text: str) -> Intent:
     )
 
 
+def _unclear(said: str, left: str, timed: list, minutes: object) -> str | None:
+    """Why a cook can't run as heard, or None. Fails closed: a time or a
+    temperature that was said but not used never falls back to a default."""
+    if match := _RANGE.search(said):
+        a, b = _fmt(float(match[1])), _fmt(float(match[2]))
+        return f"Did you mean {a} or {b} {match[3]}? Say one time."
+    topups = list(_TOPUP.finditer(said))
+    # A time to add to: one that isn't itself a top-up, or a plain "for 10".
+    base = any(not _TOPUP.match(m[0]) for m in timed) or (
+        minutes is not None and not timed
+    )
+    if topups and not base and (timed or _COOK.search(said)):
+        return (
+            f"{_fmt(float(topups[0][1]))} more minutes on top of what? "
+            "Say the total time."
+        )
+    if minutes is None and timed:
+        if len(timed) > 1 and not topups and all(_unit_rank(m) == 1 for m in timed):
+            heard = " or ".join(_fmt(float(m[1])) for m in timed)
+            return f"Did you mean {heard} minutes? Say one time."
+        return "How long in total?"
+    rest = _AMOUNT.sub(" ", left)
+    dropped = (
+        _TOPUP.search(rest)
+        or _TEMP_UNIT.search(rest)
+        or _AT_TEMP.search(rest)
+        or re.search(r"\b\d{3}\b", rest)
+        or re.search(r"\b\d+(?:\.\d+)?\s*(?:then\b|and\b|$)", rest.strip())
+        # "3 30", "3, 20 minutes": a number beside another number or a comma.
+        or re.search(r"\b\d+(?:\.\d+)?(?![\d.])(?=\s*(?:\d|[^\w\s.'-]))", rest)
+    )
+    if dropped:
+        return (
+            f"I didn't follow '{dropped[0].strip()}'. "
+            "How long in total, and at what temperature?"
+        )
+    return None
+
+
 def _food_text(raw: str) -> str:
     """The food part of a sentence: command words, temps and times removed."""
     t = _words_to_digits(raw.lower().replace("’", "'").replace("º", "°"))
-    for pattern in (_TEMP_UNIT, _MIN_UNIT, _AT_TEMP, _FOR_MIN, _ARRIVAL):
+    for pattern in (_SHAKE, _TEMP_UNIT, _MIN_UNIT, _AT_TEMP, _FOR_MIN, _ARRIVAL):
         t = pattern.sub(" ", t)
     t = re.sub(r"\b\d{3}\b", " ", t)
     t = _NO_PREHEAT.sub(" ", t)
@@ -659,6 +868,8 @@ def plan(intent: Intent | str) -> Plan:
         raise PlanError(
             f"unknown request {intent.kind!r}; use one of {', '.join(INTENTS)}."
         )
+    if intent.question:
+        return Plan(intent.kind, question=intent.question)
     if intent.kind == "stop":
         return Plan("stop")
     if intent.kind == "status":

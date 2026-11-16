@@ -2,3 +2,7 @@
 pytest-homeassistant-custom-component==0.13.375
 homeassistant==2026.10.4
 ruff==0.17.3
+# Assist tests set up the conversation integration; pins from its 2026.10.4 manifest.
+gazetteer-matcher==1.1.0
+hassil==3.12.1
+home-assistant-intents==2026.10.6

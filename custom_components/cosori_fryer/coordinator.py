@@ -89,6 +89,8 @@ class FryerCoordinator(DataUpdateCoordinator[FryerData]):
         self._finish: str | None = None
         self._sequence = 0
         self.settings = CookSettings()
+        # An Assist request waiting for "yes, air fryer" (assist.Pending), when asked to confirm.
+        self.assist_pending = None
         self._hold_limit: Callable[[], None] | None = None
         # Set once the limit has passed and until the hold is stopped or replaced.
         self._limit_passed = False
@@ -221,6 +223,8 @@ class FryerCoordinator(DataUpdateCoordinator[FryerData]):
         refusal: str = "command_refused",
     ) -> None:
         """Check fresh state; a refusal does not change read availability."""
+        # Any command, from anywhere, drops an Assist request still waiting for "yes".
+        self.assist_pending = None
         async with self._lock:
             try:
                 data = await self._read()
@@ -326,6 +330,13 @@ class FryerCoordinator(DataUpdateCoordinator[FryerData]):
             )
 
         await self.command(lambda data: self._idle_or_held(data) or data.status == "preheatEnd", send, "busy")
+        self._clear_hold_limit()
+
+    async def continue_cook(self) -> None:
+        """Continue only a cook waiting behind a finished preheat; refuse anything else."""
+        await self.command(
+            lambda data: data.status == "preheatEnd" and not data.held, self.device.cook_from_preheat
+        )
         self._clear_hold_limit()
 
     async def cook(self, temperature: int, minutes: int, preheat: bool) -> None:

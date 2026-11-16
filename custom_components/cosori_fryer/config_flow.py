@@ -8,13 +8,14 @@ from typing import Any
 
 import voluptuous as vol
 from aiohttp import ClientError
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
+from homeassistant.core import callback
 
 from custom_components.cosori_fryer._vendor.pyvesync.utils.errors import VeSyncError
 
 from . import create_manager
-from .const import DOMAIN
+from .const import CONF_CONFIRM_ASSIST, DOMAIN
 from .coordinator import AUTH_ERRORS
 
 USER_SCHEMA = vol.Schema({vol.Required(CONF_EMAIL): str, vol.Required(CONF_PASSWORD): str})
@@ -24,6 +25,11 @@ class FryerConfigFlow(ConfigFlow, domain=DOMAIN):
     """Store a session only after an explicit form submission."""
 
     VERSION = 3
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        return FryerOptionsFlow()
 
     def __init__(self) -> None:
         self._manager = None
@@ -100,4 +106,18 @@ class FryerConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="reauth_confirm",
             data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
             errors=errors,
+        )
+
+
+class FryerOptionsFlow(OptionsFlow):
+    """Whether Assist asks before it heats. Read on each request, so no reload."""
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        if user_input is not None:
+            # Merged, so what this integration hid from Assist is remembered.
+            return self.async_create_entry(data={**self.config_entry.options, **user_input})
+        current = self.config_entry.options.get(CONF_CONFIRM_ASSIST, False)
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema({vol.Required(CONF_CONFIRM_ASSIST, default=current): bool}),
         )

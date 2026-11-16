@@ -1,0 +1,49 @@
+blueprint:
+  name: Air fryer finished
+  description: >-
+    Sends a notification to a phone with the Home Assistant app when the air
+    fryer finishes preheating or cooking. Make one of these for each phone.
+  domain: automation
+  source_url: https://github.com/ScribleSean/ha-cosori-cs358-air-fryer/blob/main/blueprints/automation/cosori_fryer/notify_when_finished.yaml
+  input:
+    finished:
+      name: Air fryer Finished event
+      selector:
+        entity:
+          filter:
+            - integration: cosori_fryer
+              domain: event
+    phone:
+      name: Phone
+      selector:
+        device:
+          filter:
+            - integration: mobile_app
+    preheat:
+      name: Also when a preheat finishes
+      default: true
+      selector:
+        boolean:
+mode: queued
+triggers:
+  - trigger: state
+    entity_id: !input finished
+variables:
+  preheat: !input preheat
+  kind: "{{ trigger.to_state.attributes.event_type if trigger.to_state else none }}"
+conditions:
+  # Skip restarts and reconnects, which restore the last event without a new finish.
+  - condition: template
+    value_template: >-
+      {{ trigger.from_state is not none
+         and trigger.from_state.state != 'unavailable'
+         and trigger.to_state.state not in ['unavailable', 'unknown']
+         and (kind == 'cook_finished' or (kind == 'preheat_finished' and preheat)) }}
+actions:
+  - domain: mobile_app
+    type: notify
+    device_id: !input phone
+    title: Air fryer
+    message: >-
+      {{ 'The food is done.' if kind == 'cook_finished'
+         else 'Preheated. Put the food in.' }}

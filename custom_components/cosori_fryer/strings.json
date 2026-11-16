@@ -31,6 +31,15 @@
       "wrong_account": "Sign in with the original account."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "confirm_assist": "Ask before heating from Assist"
+        }
+      }
+    }
+  },
   "entity": {
     "binary_sensor": {
       "preheated": {

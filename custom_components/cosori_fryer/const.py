@@ -33,3 +33,7 @@ PRESETS = [
 ]
 # Phases in which nothing is running and a new cook can start.
 IDLE = ("standby", "cookEnd")
+# Option: Assist asks before anything heats. Off by default.
+CONF_CONFIRM_ASSIST = "confirm_assist"
+# How long a request waits for "yes, air fryer".
+CONFIRM_WINDOW = timedelta(seconds=60)
