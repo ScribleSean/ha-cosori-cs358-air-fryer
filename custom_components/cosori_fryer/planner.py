@@ -513,7 +513,7 @@ _AMOUNT = re.compile(
 # A shake or flip time is a reminder, not part of the cook time.
 _SHAKE = re.compile(
     r"\b(?:shake|flip|turn)(?:\s+(?:it|them|the basket|over))?\s+"
-    r"(?:(?:after|at)\s+" + _NUM + r"\s*(?:hours?|hrs?|h|minutes?|mins?|m)?\b"
+    r"(?:(?:after|at|in)\s+" + _NUM + r"\s*(?:hours?|hrs?|h|minutes?|mins?|m)?\b"
     r"|halfway(?:\s+through)?\b)"
 )
 
@@ -606,6 +606,90 @@ _CLOCK_WORDS = re.compile(
     r"|\bwhen (?:i|we|you|they|he|she)(?:'m| am| are| is)? (?:get|gets|am|are|is)? ?"
     r"(?:home|back|here|there|in)\b"
 )
+
+
+# Doneness or a cook step, not a start: "when golden", "until they're
+# crispy", "until a toothpick comes out clean", "when the timer says". After
+# when/until, a doneness word within five words lets the cook run, unless a
+# person comes first ("when i'm ready", "until we get home").
+_DONENESS = (
+    r"(?:done|ready|finished|hot|golden\w*|brown\w*|crisp\w*|cooked|tender|halfway"
+    r"|bubbl\w*|melt\w*|sizzl\w*|soft|heated|warm(?:ed)?|\d{3}|pre-?heated|clear"
+    r"|clean|set|rare|medium|opaque|pink|firm|flak\w*|char\w*|caramel\w*"
+    r"|reach\w*|beeps?|dings?|ends?|stops?|says|goes off|is up)\b"
+)
+_PERSON = (
+    r"(?:i|i'm|we|we're|you|you're|he|he's|she|she's|they get|they arrive\w*"
+    r"|they come|they're (?:home|back|here)|everyone|guests|people|company|my|our"
+    r"|the (?:guests|kids|family|game|party|show|movie))\b"
+)
+_NOT_A_START = r"(?! (?!" + _PERSON + r")(?:\S+ ){0,4}?" + _DONENESS + r")"
+# A food step, not a start: "after shaking", "before i put the fries in", a
+# trailing "add sauce after".
+_STEP = (
+    r"(?! \w+ing\b)(?! (?:i|we|you) (?:put|add|drop|toss|throw|load)\b)"
+    r"(?!\s*(?:$|[,.;!?]|and\b|then\b))"
+)
+_MEAL = r"(?:breakfast|brunch|lunch|dinner|supper)\b(?! rolls?\b)"
+
+# A cook or preheat meant for later: "375 later", "400 on friday", "for
+# dinner", "in 20 minutes". The fryer can only start now, so it asks. Keep
+# warm reads "home in 20" itself and never reaches this.
+_SCHEDULE = re.compile(
+    r"\b(?:later|soon|shortly|eventually|sometime|whenever|afterwards?"
+    r"|another time|next time|not (?:yet|now)|hold off|(?:don'?t|do not) start"
+    r"|first thing|next (?:week|hour|day|month)|(?:this |next )?weekend"
+    r"|tmrw?|tmrrw|tomoz|2morrow|tonight\w*|tonite\w*|2nite|half ?time|kick ?off"
+    r"|(?<!last )(?:over)?night\b(?! oats)|evening\b|afternoon\b(?! snack)"
+    r"|morning\b|this [ap]m\b|on the \d+(?:st|nd|rd|th)\b"
+    r"|on (?:my|the|our|his|her|their) way"
+    r"|(?:get|gets|getting|got|am|i'm|we're|arrive|arriving) (?:home|back|here|there)\b"
+    r"|(?:mon|tues|wednes|thurs|fri|satur|sun)day\b(?! roast)"
+    r"|(?:on|this|next|by) (?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\b"
+    r"|in (?:a (?:bit|while|few|sec\w*|moment)|a little (?:bit|while)|an? hrs?\b)"
+    # "in 20 minutes" is when to start; "done in 15 minutes" is how long.
+    r"|(?<!done )(?<!ready )(?<!cooked )in \d+(?:\.\d+)?\s*"
+    r"(?:hours?|hrs?|h|minutes?|mins?|m)\b"
+    r"|\d+(?:\.\d+)?\s*(?:min\w*|hours?|hrs?|h|m)?\s*(?:out|away)\b"
+    r"|(?:home|back|here|there) in \d"
+    r"|(?:breakfast|brunch|lunch|dinner|supper) ?time"
+    r"|(?:for|at|by|before|until|till|around|with) (?:my |our |the )?"
+    + _MEAL
+    + r"|for (?:the )?(?:party|game|guests|company)"
+    # A clause that sets the start: "before i get home", "when they arrive",
+    # "until he gets back", "after the game".
+    r"|after\b" + _STEP + r"(?! (?:pre-?heat\w*|it'?s|it is|the preheat)\b)"
+    r"|before\b"
+    + _STEP
+    + r"|(?:when|until|till|til)\b"
+    + _NOT_A_START
+    + r"|(?:once|by the time) (?:i|i'm|we|we're|you|they|he|she|everyone|guests"
+    r"|people|company|the (?:guests|kids|game|party))\b)"
+)
+SCHEDULE_QUESTION = (
+    "Start it now? The fryer can only start right away, so ask again when you "
+    "want it to start. Say a cook time as 'for 15 minutes'."
+)
+
+
+def scheduled(text: str | None) -> bool:
+    """True when words like "later", "on friday" or "for dinner" put a cook or
+    preheat in the future. parse() checks the whole sentence; the MCP tools
+    also check a `food` passed as a field."""
+    if not text:
+        return False
+    t = _words_to_digits(str(text).lower().replace("’", "'"))
+    return bool(_SCHEDULE.search(_SHAKE.sub(" ", t)))
+
+
+def _schedule_question(t: str) -> str | None:
+    """A cook or preheat for later is never started now without asking."""
+    status_only = _STATUS.search(t) and not (
+        _COOK.search(t) or _PREHEAT.search(t) or re.search(r"\b\d{3}\b", t)
+    )
+    if _SCHEDULE.search(_SHAKE.sub(" ", t)) and not status_only:
+        return SCHEDULE_QUESTION
+    return None
 
 
 def _clock_question(digits: str) -> str | None:
@@ -747,6 +831,14 @@ def parse(text: str) -> Intent:
             minutes = match[1]
         return Intent("keep_warm", minutes=minutes, arriving_in_min=arriving)
 
+    if question := _schedule_question(t):
+        kind = (
+            "preheat"
+            if _PREHEAT.search(t) and not _COOKING.search(_PREHEAT.sub(" ", t))
+            else "cook"
+        )
+        return Intent(kind, question=question)
+
     t = _SHAKE.sub(" ", t)
     set_to = bool(_SET_TO.search(t))
     raw_t = t
@@ -853,6 +945,7 @@ def _food_text(raw: str) -> str:
         t = pattern.sub(" ", t)
     t = re.sub(r"\b\d{3}\b", " ", t)
     t = _NO_PREHEAT.sub(" ", t)
+    t = re.sub(r"\bafter (?:the )?pre-?heat\w*", " ", t)
     t = _FOOD_IN.sub(" ", t)
     t = _FILLER.sub(" ", t)
     t = re.sub(r"[^a-z0-9.\s'-]", " ", t)
